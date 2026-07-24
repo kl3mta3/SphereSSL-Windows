@@ -368,5 +368,4 @@ MigrationBackup/
 FodyWeavers.xsd
 
 /TrayApp/
-SphereSSLv2/cachedtempdata.dll
-SphereSSLv2/cachedtempdata.dll
+*.cachedtempdata.dll
