@@ -1,0 +1,252 @@
+@page
+@model SphereSSLv2.Pages.Http01Model
+@{
+    ViewData["Title"] = "HTTP-01";
+    bool stagingOnly = SphereSSLv2.Services.Config.ConfigureService.StagingOnly;
+    bool restrictViewerFields = SphereSSLv2.Services.Config.ConfigureService.RestrictViewers
+        && Model.CurrentUser?.Role?.Equals("Viewer", StringComparison.OrdinalIgnoreCase) == true;
+}
+
+<div class="container-fluid py-3 px-3 px-xl-5" style="max-width: 1280px;">
+    <div class="text-center mb-3">
+        <h2 class="title">HTTP-01 Certificate</h2>
+        <p class="text-light">Validate a public website through port 80 without DNS a provider.</p>
+    </div>
+
+    <div class="card shadow-sm cert-form p-3 p-lg-4" style="width: 100%; max-width: 1100px !important; margin: 0 auto;">
+        <form id="httpOrderForm">
+            <div class="row g-3">
+                <div class="col-lg-5">
+                    <label class="form-label fw-semibold" for="httpEmail">Email Address</label>
+                    <input class="form-control" type="email" id="httpEmail" placeholder="you@example.com" required />
+                </div>
+                <div class="col-lg-7">
+                    <label class="form-label fw-semibold" for="httpDomains">
+                        Domain Address
+                        <i class="bi bi-info-circle info-icon ms-1" title="HTTP-01 supports domains and SANs, but not wildcard names."></i>
+                    </label>
+                    <input class="form-control" id="httpDomains" placeholder="example.com, www.example.com" required />
+                    <div class="form-text">Separate SANs with commas. Wildcards require DNS-01.</div>
+                </div>
+
+                <div class="col-12">
+                    <label class="form-label fw-semibold" for="httpSavePath">Certificate Output Location</label>
+                    <div class="input-group">
+                        <input class="form-control" id="httpSavePath" placeholder="C:\Certificates\example.com" @(restrictViewerFields ? "disabled" : "") required />
+                        <button class="btn btn-outline-secondary" type="button" data-folder-target="httpSavePath" @(restrictViewerFields ? "disabled" : "")>Browse</button>
+                    </div>
+                    <div class="form-text">The issued certificate and private key are saved here.</div>
+                </div>
+
+                <div class="col-12 text-center">
+                    <label class="form-label fw-semibold">HTTP Validation Mode</label>
+                    <div class="d-flex flex-wrap gap-4 justify-content-center">
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="httpMode" id="httpSysMode" value="http-sys" checked />
+                            <label class="form-check-label" for="httpSysMode">
+                                Temporary Challenge Server
+                                <i class="bi bi-info-circle info-icon ms-1" title="SphereSSL temporarily uses HTTP.sys on port 80 only for /.well-known/acme-challenge/ requests."></i>
+                            </label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="httpMode" id="webrootMode" value="webroot" />
+                            <label class="form-check-label" for="webrootMode">Public Webroot</label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="col-12 d-none" id="webrootSection" align="center">
+                    <label class="form-label fw-semibold" for="httpWebRoot">
+                        Public Webroot
+                        <i class="bi bi-info-circle info-icon ms-1" title="Select the live site root. SphereSSL writes .well-known/acme-challenge beneath this folder during validation."></i>
+                    </label>
+                    <div class="input-group">
+                        <input class="form-control" id="httpWebRoot" placeholder="C:\inetpub\wwwroot" />
+                        <button class="btn btn-outline-secondary" type="button" data-folder-target="httpWebRoot">Browse</button>
+                    </div>
+                    <div class="form-text">The challenge must be reachable at http://your-domain/.well-known/acme-challenge/&lt;token&gt;.</div>
+                </div>
+
+                <div class="col-12" align="center">
+                    <label class="form-label fw-semibold">Certificate Format</label>
+                    <div class="d-flex flex-wrap gap-4 justify-content-center">
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="httpFormat" id="httpSingle" value="false" checked />
+                            <label class="form-check-label" for="httpSingle">Single PEM</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="httpFormat" id="httpSeparate" value="true" />
+                            <label class="form-check-label" for="httpSeparate">Separate CRT + KEY</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="httpFormat" id="httpPfx" value="pfx" />
+                            <label class="form-check-label" for="httpPfx">PFX / PKCS#12</label>
+                        </div>
+                    </div>
+                    <div class="row g-2 mt-2 d-none" id="httpPfxPasswordSection">
+                        <div class="col-md-6">
+                            <label class="form-label" for="httpPfxPassword">PFX Password</label>
+                            <input class="form-control" type="password" id="httpPfxPassword" autocomplete="new-password" />
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label" for="httpPfxPasswordConfirm">Confirm Password</label>
+                            <input class="form-control" type="password" id="httpPfxPasswordConfirm" autocomplete="new-password" />
+                        </div>
+                        <div class="form-text">A password is recommended, but an empty password is supported.</div>
+                    </div>
+                </div>
+
+                <div class="col-12 d-flex flex-column align-items-center gap-2">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="httpSaveRenewal" @(restrictViewerFields ? "disabled" : "") />
+                        <label class="form-check-label" for="httpSaveRenewal">Save Order</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="httpAutoRenew" @(restrictViewerFields ? "disabled" : "") />
+                        <label class="form-check-label" for="httpAutoRenew">Auto Renew</label>
+                    </div>
+                    <div class="form-check d-none" id="httpAutoImportRow">
+                        <input class="form-check-input" type="checkbox" id="httpAutoImport"
+                               data-restricted="@restrictViewerFields.ToString().ToLowerInvariant()"
+                               @(restrictViewerFields ? "disabled" : "") />
+                        <label class="form-check-label" for="httpAutoImport">
+                            Auto Import
+                            <i class="bi bi-info-circle ms-1" title="Imports the PFX into Local Computer > Personal. SphereSSL must be running as administrator. Renewals replace the previously imported certificate."></i>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="col-12 d-flex flex-wrap gap-3 align-items-center justify-content-center mt-2">
+                    <div class="form-check form-switch mb-0">
+                        <input class="form-check-input" type="checkbox" id="httpUseStaging" @(stagingOnly ? "checked disabled" : "") />
+                        <label class="form-check-label" for="httpUseStaging" title="Use the untrusted Let's Encrypt staging environment for testing">
+                            Staging@(stagingOnly ? " (locked)" : "")
+                        </label>
+                    </div>
+                    <button class="btn btn-sm btn-outline-secondary py-0 px-2" type="button" id="testHttpListener">Test Port 80</button>
+                </div>
+
+                <div class="col-12 d-flex justify-content-center pt-1">
+                    <button class="btn-glow px-4" type="submit" id="httpStartButton">Start HTTP-01</button>
+                </div>
+            </div>
+        </form>
+        <div class="alert alert-info mt-3 mb-0 py-2">
+            <strong>Port 80 is required.</strong> Staging and production both perform real public HTTP validation.
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="httpResultModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header"><h5 class="modal-title">HTTP-01 Certificate</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-body" id="httpResultContent"></div>
+            <div class="modal-footer" id="httpDownloadButtons"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+(() => {
+    const pfxPasswordSection = document.getElementById('httpPfxPasswordSection');
+    const autoImportRow = document.getElementById('httpAutoImportRow');
+    const autoImport = document.getElementById('httpAutoImport');
+    const updatePfxVisibility = () => {
+        const pfxSelected = document.getElementById('httpPfx').checked;
+        pfxPasswordSection.classList.toggle('d-none', !pfxSelected);
+        autoImportRow.classList.toggle('d-none', !pfxSelected);
+        autoImport.disabled = !pfxSelected || autoImport.dataset.restricted === 'true';
+        if (!pfxSelected) autoImport.checked = false;
+    };
+    document.querySelectorAll('input[name="httpFormat"]').forEach(input => input.addEventListener('change', updatePfxVisibility));
+    updatePfxVisibility();
+    const webrootSection = document.getElementById('webrootSection');
+    const webrootInput = document.getElementById('httpWebRoot');
+    const updateWebrootVisibility = () => {
+        const useWebroot = document.getElementById('webrootMode').checked;
+        webrootSection.classList.toggle('d-none', !useWebroot);
+        webrootInput.required = useWebroot;
+        document.getElementById('testHttpListener').classList.toggle('d-none', useWebroot);
+    };
+    document.querySelectorAll('input[name="httpMode"]').forEach(input =>
+        input.addEventListener('change', updateWebrootVisibility));
+    updateWebrootVisibility();
+
+    document.querySelectorAll('[data-folder-target]').forEach(button => button.addEventListener('click', async () => {
+        const response = await fetch('/select-folder');
+        const path = await response.text();
+        if (path) document.getElementById(button.dataset.folderTarget).value = path;
+    }));
+
+    document.getElementById('testHttpListener').addEventListener('click', async event => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+            const response = await fetch('/Http01?handler=TestListener', { method: 'POST' });
+            const data = await response.json();
+            alert(data.message || (response.ok ? 'Port 80 listener test passed.' : 'Port 80 listener test failed.'));
+        } catch (error) {
+            alert('Port 80 listener test failed: ' + error.message);
+        } finally {
+            button.disabled = false;
+        }
+    });
+    document.getElementById('httpAutoRenew').addEventListener('change', event => {
+        if (event.target.checked) document.getElementById('httpSaveRenewal').checked = true;
+    });
+
+    document.getElementById('httpOrderForm').addEventListener('submit', async event => {
+        event.preventDefault();
+        const outputFormat = document.getElementById('httpPfx').checked
+            ? 'pfx'
+            : (document.getElementById('httpSeparate').checked ? 'separate' : 'pem');
+        if (outputFormat === 'pfx' &&
+            document.getElementById('httpPfxPassword').value !== document.getElementById('httpPfxPasswordConfirm').value) {
+            alert('PFX passwords do not match.');
+            return;
+        }
+        const button = document.getElementById('httpStartButton');
+        const result = document.getElementById('httpResultContent');
+        const downloads = document.getElementById('httpDownloadButtons');
+        button.disabled = true;
+        button.textContent = 'Validating...';
+        result.innerHTML = '<div class="text-center"><div class="spinner-border text-primary"></div><p class="mt-3">Creating the HTTP challenge and waiting for CA validation...</p></div>';
+        downloads.innerHTML = '';
+        const modal = new bootstrap.Modal(document.getElementById('httpResultModal'));
+        modal.show();
+
+        const payload = {
+            email: document.getElementById('httpEmail').value.trim(),
+            domains: document.getElementById('httpDomains').value.split(',').map(x => x.trim()).filter(Boolean),
+            savePath: document.getElementById('httpSavePath').value.trim(),
+            httpValidationMode: document.querySelector('input[name="httpMode"]:checked').value,
+            httpWebRoot: document.getElementById('httpWebRoot').value.trim(),
+            useSeparateFiles: outputFormat === 'separate',
+            outputFormat: outputFormat,
+            pfxPassword: document.getElementById('httpPfxPassword').value,
+            saveForRenewal: document.getElementById('httpSaveRenewal').checked,
+            autoRenew: document.getElementById('httpAutoRenew').checked,
+            autoImport: document.getElementById('httpAutoImport').checked,
+            useStaging: document.getElementById('httpUseStaging').checked
+        };
+
+        try {
+            const response = await fetch('/Http01?handler=Create', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+            const data = await response.json();
+            if (!response.ok || !data.success) throw new Error(data.message || 'HTTP-01 request failed.');
+            result.innerHTML = `<div class="alert alert-success mb-0"><strong>${data.message}</strong><br>Domains: ${data.domains.join(', ')}<br>Expires: ${new Date(data.expiryDate).toLocaleString()}${data.autoImport ? '<br><strong>Imported into Local Computer &gt; Personal.</strong>' : ''}${data.staging ? '<br><strong>Staging certificate (not trusted).</strong>' : ''}</div>`;
+            downloads.innerHTML = data.outputFormat === 'pfx'
+                ? '<a class="btn btn-primary" href="/Http01?handler=DownloadCertPfx">Download PFX</a>'
+                : data.outputFormat === 'separate'
+                    ? '<a class="btn btn-primary" href="/Http01?handler=DownloadCertCrt">Download CRT</a><a class="btn btn-primary" href="/Http01?handler=DownloadCertKey">Download KEY</a>'
+                    : '<a class="btn btn-primary" href="/Http01?handler=DownloadCertPem">Download PEM</a>';
+        } catch (error) {
+            result.innerHTML = `<div class="alert alert-danger mb-0"><strong>HTTP-01 failed.</strong><br>${error.message}</div>`;
+        } finally {
+            button.disabled = false;
+            button.textContent = 'Start HTTP-01';
+        }
+    });
+})();
+</script>

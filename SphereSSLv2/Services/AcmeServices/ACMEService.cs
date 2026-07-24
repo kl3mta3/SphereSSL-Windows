@@ -1,4 +1,4 @@
-﻿using ACMESharp.Protocol;
+using ACMESharp.Protocol;
 using ACMESharp.Protocol.Resources;
 
 using System.Security.Cryptography.X509Certificates;
@@ -223,7 +223,131 @@ namespace SphereSSLv2.Services.AcmeServices
         }
 
 
-        internal async Task<(string certPem, string keyPem)> ProcessCertificateGeneration(bool useSeperateFiles, string savePath, List<AcmeChallenge> challenges, string username)
+        public async Task<List<AcmeChallenge>> CreateUserAccountForHttpCert(string email, List<string> requestDomains)
+        {
+            _order = new OrderDetails();
+            _domain = string.Empty;
+            if (requestDomains.Count == 0 || requestDomains.Any(d => string.IsNullOrWhiteSpace(d) || d.StartsWith("*.", StringComparison.Ordinal)))
+                throw new InvalidOperationException("HTTP-01 requires at least one non-wildcard domain.");
+
+            if (!await InitAsync(email))
+                throw new InvalidOperationException("ACME account initialization failed. Check the email address and CA settings.");
+
+            _order = await BeginOrder(requestDomains) ?? throw new InvalidOperationException("The ACME server did not create an order.");
+            if (_order.Payload.Status == "invalid")
+                throw new InvalidOperationException("The ACME server rejected the HTTP-01 order.");
+
+            var results = new List<AcmeChallenge>();
+            using var algorithm = SHA256.Create();
+            var thumbprint = Base64UrlEncode(JwsHelper.ComputeThumbprint(_signer, algorithm));
+
+            for (var i = 0; i < _order.Payload.Authorizations.Length; i++)
+            {
+                var authz = await _client.GetAuthorizationDetailsAsync(_order.Payload.Authorizations[i]);
+                var httpChallenge = authz.Challenges.FirstOrDefault(c => c.Type == "http-01")
+                    ?? throw new InvalidOperationException($"The CA did not offer HTTP-01 for {authz.Identifier.Value}.");
+                results.Add(new AcmeChallenge
+                {
+                    Domain = authz.Identifier.Value,
+                    AuthorizationUrl = _order.Payload.Authorizations[i],
+                    HttpToken = httpChallenge.Token,
+                    HttpKeyAuthorization = $"{httpChallenge.Token}.{thumbprint}"
+                });
+            }
+            return results;
+        }
+
+        internal async Task<(string certPem, string keyPem)> ProcessHttpCertificateGeneration(
+            bool useSeparateFiles, string savePath, string validationMode, string httpWebRoot,
+            List<AcmeChallenge> challenges, string username, string outputFormat = "", string pfxPassword = "")
+        {
+            if (_order == null) throw new InvalidOperationException("The HTTP ACME order is not initialized.");
+            var responses = challenges.ToDictionary(c => c.HttpToken, c => c.HttpKeyAuthorization, StringComparer.Ordinal);
+            IAsyncDisposable? challengeLease = null;
+
+            try
+            {
+                if (string.Equals(validationMode, "webroot", StringComparison.OrdinalIgnoreCase))
+                {
+                    challengeLease = new HttpWebRootLease(httpWebRoot, responses);
+                    await _logger.Info($"[{username}]: HTTP-01 challenge files written to {httpWebRoot}.");
+                }
+                else
+                {
+                    try
+                    {
+                        var server = new HttpChallengeServer(responses);
+                        server.Start();
+                        challengeLease = server;
+                        await _logger.Info($"[{username}]: Temporary HTTP.sys challenge server listening on port 80.");
+                    }
+                    catch when (!string.IsNullOrWhiteSpace(httpWebRoot))
+                    {
+                        challengeLease = new HttpWebRootLease(httpWebRoot, responses);
+                        await _logger.Info($"[{username}]: HTTP.sys unavailable; using webroot fallback at {httpWebRoot}.");
+                    }
+                }
+
+                foreach (var challenge in challenges)
+                {
+                    var authz = await _client.GetAuthorizationDetailsAsync(challenge.AuthorizationUrl);
+                    var httpChallenge = authz.Challenges.First(c => c.Type == "http-01");
+                    if (httpChallenge.Status == "pending")
+                    {
+                        if (_client.Directory?.NewNonce == null) _client.Directory = await _client.GetDirectoryAsync();
+                        await _client.GetNonceAsync();
+                        await _client.AnswerChallengeAsync(httpChallenge.Url);
+                    }
+                }
+
+                const int maxPollingAttempts = 30;
+                for (var attempt = 0; attempt < maxPollingAttempts; attempt++)
+                {
+                    var allValid = true;
+                    foreach (var challenge in challenges)
+                    {
+                        var authz = await _client.GetAuthorizationDetailsAsync(challenge.AuthorizationUrl);
+                        var httpChallenge = authz.Challenges.First(c => c.Type == "http-01");
+                        if (authz.Status == "invalid" || httpChallenge.Status == "invalid")
+                            throw new InvalidOperationException($"HTTP-01 validation failed for {challenge.Domain}: {httpChallenge.Error}");
+                        if (authz.Status != "valid" || httpChallenge.Status != "valid") allValid = false;
+                    }
+                    if (allValid) break;
+                    if (attempt == maxPollingAttempts - 1)
+                        throw new TimeoutException("HTTP-01 validation timed out.");
+                    await Task.Delay(3000);
+                }
+
+                var key = KeyFactory.NewKey(KeyAlgorithm.RS256);
+                var csrBuilder = new CertificationRequestBuilder(key);
+                csrBuilder.AddName("CN", challenges[0].Domain);
+                foreach (var challenge in challenges) csrBuilder.SubjectAlternativeNames.Add(challenge.Domain);
+                await _client.FinalizeOrderAsync(_order.Payload.Finalize, csrBuilder.Generate());
+
+                OrderDetails finalizedOrder;
+                var waitAttempts = 0;
+                do
+                {
+                    await Task.Delay(3000);
+                    finalizedOrder = await _client.GetOrderDetailsAsync(_order.OrderUrl);
+                    if (++waitAttempts >= 20) throw new TimeoutException("Certificate issuance timed out.");
+                } while (finalizedOrder.Payload.Status == "processing");
+
+                if (finalizedOrder.Payload.Status != "valid" || string.IsNullOrWhiteSpace(finalizedOrder.Payload.Certificate))
+                    throw new InvalidOperationException($"Certificate order failed with status {finalizedOrder.Payload.Status}.");
+
+                using var http = new HttpClient();
+                var certPem = await http.GetStringAsync(finalizedOrder.Payload.Certificate);
+                var keyPem = key.ToPem();
+                await DownloadCertificateAsync(useSeparateFiles, savePath, certPem, keyPem, username, outputFormat, pfxPassword);
+                return (certPem, keyPem);
+            }
+            finally
+            {
+                if (challengeLease != null) await challengeLease.DisposeAsync();
+            }
+        }
+        internal async Task<(string certPem, string keyPem)> ProcessCertificateGeneration(bool useSeperateFiles, string savePath, List<AcmeChallenge> challenges, string username, string outputFormat = "", string pfxPassword = "")
         {
             var key = KeyFactory.NewKey(KeyAlgorithm.RS256);
             var csrBuilder = new CertificationRequestBuilder(key);
@@ -339,7 +463,7 @@ namespace SphereSSLv2.Services.AcmeServices
             var certPem = await http.GetStringAsync(certUrl);
             var keyPem = key.ToPem();
 
-            await DownloadCertificateAsync(useSeperateFiles, savePath, certPem, keyPem, username);
+            await DownloadCertificateAsync(useSeperateFiles, savePath, certPem, keyPem, username, outputFormat, pfxPassword);
 
             _ = _logger.Info($"[{username}]: SSL Certificate successfully generated and downloaded!");
             return (certPem, keyPem);
@@ -433,91 +557,106 @@ namespace SphereSSLv2.Services.AcmeServices
             }
         }
 
-        private async Task DownloadCertificateAsync(bool useSeperateFiles, string savePath, string certPem, string keyPem, string username)
+        private async Task DownloadCertificateAsync(bool useSeparateFiles, string savePath, string certPem, string keyPem,
+            string username, string outputFormat = "", string pfxPassword = "")
         {
-    
-            _= _logger.Info($"[{username}]: Getting ready for Download  Path:{savePath}!");
-
-
+            _ = _logger.Info($"[{username}]: Getting ready for Download Path:{savePath}!");
             if (Path.GetPathRoot(savePath)?.TrimEnd('\\') == savePath.TrimEnd('\\'))
+                throw new InvalidOperationException("Cannot save directly to the root of a drive. Please choose a subfolder.");
+
+            savePath = string.IsNullOrWhiteSpace(savePath)
+                ? Path.Combine(Directory.GetCurrentDirectory(), "certs")
+                : Path.GetFullPath(Path.IsPathRooted(savePath) ? savePath : Path.Combine(Directory.GetCurrentDirectory(), savePath));
+            Directory.CreateDirectory(savePath);
+
+            var format = string.IsNullOrWhiteSpace(outputFormat)
+                ? (useSeparateFiles ? "separate" : "pem")
+                : outputFormat.Trim().ToLowerInvariant();
+            var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+            var prefix = "cert_" + timestamp;
+            byte[]? pfxBytes = null;
+
+            if (format == "pfx")
             {
-                _= _logger.Error($"[{username}]: Cannot save directly to the root of a drive. Please choose a subfolder.");
-                return;
+                pfxBytes = CreateFullChainPfx(certPem, keyPem, pfxPassword);
+                await File.WriteAllBytesAsync(Path.Combine(savePath, $"{prefix}.pfx"), pfxBytes);
+            }
+            else if (format == "separate")
+            {
+                await File.WriteAllTextAsync(Path.Combine(savePath, $"{prefix}.crt"), certPem);
+                await File.WriteAllTextAsync(Path.Combine(savePath, $"{prefix}.key"), keyPem);
+            }
+            else
+            {
+                await File.WriteAllTextAsync(Path.Combine(savePath, $"{prefix}.pem"), certPem + "\n" + keyPem);
             }
 
-
-            if (string.IsNullOrWhiteSpace(savePath))
+            var tempFolder = Path.Combine(AppContext.BaseDirectory, "Temp");
+            Directory.CreateDirectory(tempFolder);
+            if (format == "pfx")
+                await File.WriteAllBytesAsync(Path.Combine(tempFolder, "tempCert.pfx"), pfxBytes!);
+            else if (format == "separate")
             {
-                savePath = System.IO.Directory.GetCurrentDirectory()+"/certs";
+                await File.WriteAllTextAsync(Path.Combine(tempFolder, "tempCert.crt"), certPem);
+                await File.WriteAllTextAsync(Path.Combine(tempFolder, "tempKey.key"), keyPem);
             }
-            else if (!Path.IsPathRooted(savePath))
-            {
-                savePath = Path.Combine(System.IO.Directory.GetCurrentDirectory(), savePath);
-            }
-            savePath = Path.GetFullPath(savePath);
-
-
-            System.IO.Directory.CreateDirectory(savePath);
-
-            string certFile = "";
-            string keyFile = "";
-            string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-            string prefix = "cert_" + timestamp;
-
-            try
-            {
-
-                if (!useSeperateFiles)
-                {
-
-                    string combinedPath = Path.Combine(savePath, $"{prefix}.pem");
-                    File.WriteAllText(combinedPath, certPem + "\n" + keyPem);
-                    _ = _logger.Info($"[{username}]: Saved combined PEM: {combinedPath}");
-                    certFile = certPem + "\n" + keyPem;
-                }
-                else if (useSeperateFiles)
-                {
-                    string certPath = Path.Combine(savePath, $"{prefix}.crt");
-                    string keyPath = Path.Combine(savePath, $"{prefix}.key");
-                    File.WriteAllText(certPath, certPem);
-                    File.WriteAllText(keyPath, keyPem);
-                    _= _logger.Info($"[{username}]: Saved certificate: {certPath}");
-                    _ = _logger.Info($"[{username}]: Saved private key: {keyPath}");
-                    certFile = certPem ;
-                    keyFile = keyPem;
-                }
-
-            }
-            catch (Exception ex)
-            {
-                _ = _logger.Error($"[{username}]: Error saving files: {ex.Message}");
-            }
-
-            await Task.Delay(500);
-            string tempFolder = Path.Combine(AppContext.BaseDirectory, "Temp");
-            System.IO.Directory.CreateDirectory(tempFolder);
-           
-            try
-            {
-                if (!useSeperateFiles)
-                {
-                    string savefile = Path.Combine(tempFolder, $"tempCert.pem");
-                    File.WriteAllText(savefile, certFile);
-
-                }
-                else
-                {
-                    string saveCrtfile = Path.Combine(tempFolder, $"tempCert.crt");
-                    string saveKeyfile = Path.Combine(tempFolder, $"tempKey.key");
-
-                    File.WriteAllText(saveCrtfile, certFile);
-                    File.WriteAllText(saveKeyfile, keyFile);
-
-                }
-            }
-            catch { /* silently fail if not Windows or explorer not available */ }
+            else
+                await File.WriteAllTextAsync(Path.Combine(tempFolder, "tempCert.pem"), certPem + "\n" + keyPem);
         }
 
+        internal static byte[] CreateFullChainPfx(string certPem, string keyPem, string password)
+        {
+            using var leafWithKey = X509Certificate2.CreateFromPem(certPem, keyPem);
+            var pemCertificates = new X509Certificate2Collection();
+            pemCertificates.ImportFromPem(certPem);
+            var exportCollection = new X509Certificate2Collection { leafWithKey };
+            foreach (var certificate in pemCertificates.Cast<X509Certificate2>().Skip(1))
+                exportCollection.Add(certificate);
+            return exportCollection.Export(X509ContentType.Pfx, password)!
+                ?? throw new InvalidOperationException("PFX export failed.");
+        }
+        internal static void EnsureLocalMachineCertificateStoreWritable()
+        {
+            if (!OperatingSystem.IsWindows())
+                throw new PlatformNotSupportedException("Automatic certificate import is available only on Windows.");
+
+            using var store = new X509Store(StoreName.My, StoreLocation.LocalMachine);
+            try
+            {
+                store.Open(OpenFlags.ReadWrite);
+            }
+            catch (CryptographicException ex)
+            {
+                throw new InvalidOperationException(
+                    "SphereSSL cannot write to Local Computer > Personal. Run SphereSSL as administrator to use Auto Import.", ex);
+            }
+        }
+
+        internal static string ImportPfxToLocalMachine(
+            string certPem, string keyPem, string password, string previousImportedThumbprint = "")
+        {
+            EnsureLocalMachineCertificateStoreWritable();
+            var pfxBytes = CreateFullChainPfx(certPem, keyPem, password);
+            var flags = X509KeyStorageFlags.MachineKeySet |
+                        X509KeyStorageFlags.PersistKeySet |
+                        X509KeyStorageFlags.Exportable;
+            using var certificate = new X509Certificate2(pfxBytes, password, flags);
+            using var store = new X509Store(StoreName.My, StoreLocation.LocalMachine);
+            store.Open(OpenFlags.ReadWrite);
+            store.Add(certificate);
+
+            var newThumbprint = certificate.Thumbprint ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(previousImportedThumbprint) &&
+                !string.Equals(previousImportedThumbprint, newThumbprint, StringComparison.OrdinalIgnoreCase))
+            {
+                var previousCertificates = store.Certificates.Find(
+                    X509FindType.FindByThumbprint, previousImportedThumbprint, validOnly: false);
+                foreach (var previousCertificate in previousCertificates)
+                    store.Remove(previousCertificate);
+            }
+
+            return newThumbprint;
+        }
         internal static  ESJwsTool LoadOrCreateSigner( AcmeService acme, string path = "signer.pem")
         {
             var signer = new ESJwsTool();

@@ -1,4 +1,4 @@
-﻿@page
+@page
 @model SphereSSLv2.Pages.DashboardModel
 
 @{
@@ -66,6 +66,22 @@
                                                 <span class="format-subtext">.crt and .key</span>
                                             </label>
                                         </div>
+                                        <div class="format-option text-center">
+                                            <input type="radio" name="certFormat" value="pfx" id="usePfxFile" />
+                                            <label for="usePfxFile">
+                                                <strong>PFX / PKCS#12</strong><br>
+                                                <span class="format-subtext">.pfx</span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div class="row g-2 mb-3 d-none" id="pfxPasswordSection">
+                                        <div class="col-md-6">
+                                            <input type="password" class="form-control" id="pfxPassword" placeholder="PFX password" autocomplete="new-password" />
+                                        </div>
+                                        <div class="col-md-6">
+                                            <input type="password" class="form-control" id="pfxPasswordConfirm" placeholder="Confirm PFX password" autocomplete="new-password" />
+                                        </div>
+                                        <span class="format-subtext">A password is recommended, but an empty password is supported.</span>
                                     </div>
 
                                     <h6 @(restrictViewerFields ? "class=\"text-muted\"" : "")><strong>Save Path</strong></h6>
@@ -183,7 +199,9 @@
                                                             var allProviders = record.Challenges?.Select(c => c.ProviderId).Distinct().ToList() ?? new List<string>();
                                                             var primaryDomain = allDomains.FirstOrDefault() ?? "(none)";
                                                             var primaryProvider = allProviders.FirstOrDefault() ?? "(none)";
-                                                            var providername = Model.DNSProviders.FirstOrDefault(p => p.ProviderId == string.Join(", ", allProviders))?.Provider ?? "Unknown Provider";
+                                                            var providername = string.Equals(record.ChallengeType, "http-01", StringComparison.OrdinalIgnoreCase)
+                                                                ? (string.Equals(record.HttpValidationMode, "webroot", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(record.HttpWebRoot) ? "HTTP-01 · Public Webroot" : "HTTP-01 · TCS")
+                                                                : Model.DNSProviders.FirstOrDefault(p => p.ProviderId == string.Join(", ", allProviders))?.Provider ?? "Unknown Provider";
                                                             <div class="card mb-2 shadow-sm" role="button" onclick="showCertRecordModal('@record.OrderId')" style="cursor: pointer;">
                                                                 <div class="card-body d-flex justify-content-between align-items-center">
                                                                     <div class="d-flex flex-column text-start">
@@ -265,7 +283,9 @@
                                                                 var primaryDomain = allDomains.FirstOrDefault() ?? "(none)";
                                                                 var allProviders = record.Challenges?.Select(c => c.ProviderId).Distinct().ToList() ?? new List<string>();
                                                                 var primaryProvider = allProviders.FirstOrDefault() ?? "(none)";
-                                                                var providername = Model.DNSProviders.FirstOrDefault(p => p.ProviderId == string.Join(", ", allProviders))?.Provider ?? "Unknown Provider";
+                                                                var providername = string.Equals(record.ChallengeType, "http-01", StringComparison.OrdinalIgnoreCase)
+                                                                ? (string.Equals(record.HttpValidationMode, "webroot", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(record.HttpWebRoot) ? "HTTP-01 · Public Webroot" : "HTTP-01 · TCS")
+                                                                : Model.DNSProviders.FirstOrDefault(p => p.ProviderId == string.Join(", ", allProviders))?.Provider ?? "Unknown Provider";
 
                                                                 <div class="card mb-2 shadow-sm" role="button" onclick="showCertRecordModal('@record.OrderId')" style="cursor: pointer;">
                                                                     <div class="card-body d-flex justify-content-between align-items-center">
@@ -349,7 +369,9 @@
                                                                 var allProviders = record.Challenges?.Select(c => c.ProviderId).Distinct().ToList() ?? new List<string>();
                                                                 var primaryDomain = allDomains.FirstOrDefault() ?? "(none)";
                                                                 var primaryProvider = allProviders.FirstOrDefault() ?? "(none)";
-                                                                var providername = Model.DNSProviders.FirstOrDefault(p => p.ProviderId == string.Join(", ", allProviders))?.Provider ?? "Unknown Provider";
+                                                                var providername = string.Equals(record.ChallengeType, "http-01", StringComparison.OrdinalIgnoreCase)
+                                                                ? (string.Equals(record.HttpValidationMode, "webroot", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(record.HttpWebRoot) ? "HTTP-01 · Public Webroot" : "HTTP-01 · TCS")
+                                                                : Model.DNSProviders.FirstOrDefault(p => p.ProviderId == string.Join(", ", allProviders))?.Provider ?? "Unknown Provider";
 
                                                                 <div class="card mb-2 shadow-sm" role="button" onclick="showCertRecordModal('@record.OrderId')" style="cursor: pointer;">
                                                                     <div class="card-body d-flex justify-content-between align-items-center">
@@ -523,6 +545,13 @@
 
 <!-- Submit Quick Connect -->
 <script>
+    const updateDashboardPfxVisibility = () => {
+        const section = document.getElementById('pfxPasswordSection');
+        if (section) section.classList.toggle('d-none', !document.getElementById('usePfxFile')?.checked);
+    };
+    document.querySelectorAll('input[name="certFormat"]')?.forEach(input => input.addEventListener('change', updateDashboardPfxVisibility));
+    updateDashboardPfxVisibility();
+
     async function submitOrder() {
         // Show waiting modal
         const waitModalResponse = await fetch("/Dashboard?handler=ShowWaitningModal");
@@ -538,7 +567,15 @@
 
         // Get cert format
         const selectedFormat = document.querySelector('input[name="certFormat"]:checked');
-        const useSeparateFiles = selectedFormat ? selectedFormat.value === "true" : false;
+        const outputFormat = selectedFormat?.value === 'pfx' ? 'pfx' : (selectedFormat?.value === 'true' ? 'separate' : 'pem');
+        const useSeparateFiles = outputFormat === 'separate';
+        const pfxPassword = document.getElementById('pfxPassword').value;
+        if (outputFormat === 'pfx' && pfxPassword !== document.getElementById('pfxPasswordConfirm').value) {
+            alert('PFX passwords do not match.');
+            startButton.disabled = false;
+            startButton.hidden = false;
+            return;
+        }
 
         // Get useStaging toggle
         const useStaging = document.getElementById('useStaging').checked;
@@ -550,6 +587,8 @@
             savePath: document.getElementById("savePath").value,
             creationTime: "",
             useSeparateFiles: useSeparateFiles,
+            outputFormat: outputFormat,
+            pfxPassword: pfxPassword,
             saveForRenewal: document.getElementById("saveForRenewal").checked,
             autoRenew: document.getElementById("autoRenew").checked
         };
@@ -749,6 +788,15 @@
 
         const downloadPem = document.getElementById("downloadButton");
         if (downloadPem) downloadPem.style.display = "none";
+        const singleDownloadButton = document.getElementById('singleCertificateDownloadButton');
+        const selectedOutputFormat = document.querySelector('input[name="certFormat"]:checked')?.value;
+        if (singleDownloadButton) {
+            const isPfx = selectedOutputFormat === 'pfx';
+            singleDownloadButton.textContent = isPfx ? 'Download PFX' : 'Download PEM';
+            singleDownloadButton.onclick = () => window.location.href = isPfx
+                ? '/Dashboard?handler=DownloadCertPfx&savePath=Temp'
+                : '/Dashboard?handler=DownloadCertPem&savePath=Temp';
+        }
 
         const downloadBoth = document.getElementById("downloadButtons");
         if (downloadBoth) downloadBoth.style.display = "none";

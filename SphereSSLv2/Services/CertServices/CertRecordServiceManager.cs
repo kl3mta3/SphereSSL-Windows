@@ -1,4 +1,4 @@
-﻿using ACMESharp.Crypto.JOSE.Impl;
+using ACMESharp.Crypto.JOSE.Impl;
 using ACMESharp.Protocol;
 using SphereSSLv2.Data.Database;
 using SphereSSLv2.Data.Repositories;
@@ -9,6 +9,7 @@ using SphereSSLv2.Services;
 using SphereSSLv2.Services.AcmeServices;
 using SphereSSLv2.Services.Config;
 using System.Diagnostics;
+using System.Security.Cryptography.X509Certificates;
 
 using CertRecord = SphereSSLv2.Models.CertModels.CertRecord;
 
@@ -58,6 +59,102 @@ namespace SphereSSLv2.Services.CertServices
 
         }
 
+        public async Task<bool> RenewHttpCertificateById(Logger logger, string orderId, Action<string>? reportError = null)
+        {
+            var order = await CertRepository.GetCertRecordByOrderId(orderId);
+            if (order == null || !string.Equals(order.ChallengeType, "http-01", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            try
+            {
+                var userRepository = new UserRepository(new DnsProviderRepository());
+                var user = await userRepository.GetUserByIdAsync(order.UserId);
+                if (user == null) throw new InvalidOperationException("Certificate owner was not found.");
+                if (string.IsNullOrWhiteSpace(order.OrderUrl)) throw new InvalidOperationException("The saved HTTP order does not identify its certificate authority.");
+
+                var orderUri = new Uri(order.OrderUrl);
+                var baseUrl = $"{orderUri.Scheme}://{orderUri.Host}/";
+                var seed = new AcmeService(logger);
+                var signer = AcmeService.LoadOrCreateSigner(seed);
+                var acme = new AcmeService(logger)
+                {
+                    _logger = logger,
+                    _signer = signer,
+                    _client = new AcmeProtocolClient(new HttpClient { BaseAddress = new Uri(baseUrl) }, null, null, signer)
+                };
+
+                var domains = order.Challenges.Select(c => c.Domain).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                var newChallenges = await acme.CreateUserAccountForHttpCert(order.Email, domains);
+                foreach (var challenge in newChallenges)
+                {
+                    var old = order.Challenges.FirstOrDefault(c => string.Equals(c.Domain, challenge.Domain, StringComparison.OrdinalIgnoreCase));
+                    challenge.ChallengeId = old?.ChallengeId ?? Guid.NewGuid().ToString("N");
+                    challenge.OrderId = order.OrderId;
+                    challenge.UserId = order.UserId;
+                    challenge.Status = "Processing";
+                }
+
+                var renewalMode = string.Equals(order.HttpValidationMode, "webroot", StringComparison.OrdinalIgnoreCase) &&
+                                  !string.IsNullOrWhiteSpace(order.HttpWebRoot)
+                    ? "webroot"
+                    : "http-sys";
+
+                if (renewalMode == "http-sys")
+                {
+                    await logger.Info($"[{user.Username}]: HTTP-01 renewal is using Temporary Challenge Server (TCS).");
+                    await HttpSysUrlReservation.EnsureListenerAvailableAsync();
+                }
+                else
+                {
+                    await logger.Info($"[{user.Username}]: HTTP-01 renewal is using Public Webroot: {order.HttpWebRoot}.");
+                }
+
+                if (order.AutoImport)
+                {
+                    if (!string.Equals(order.EffectiveOutputFormat, "pfx", StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidOperationException("Auto Import requires the PFX certificate format.");
+
+                    AcmeService.EnsureLocalMachineCertificateStoreWritable();
+                }
+
+                var (certPem, certKey) = await acme.ProcessHttpCertificateGeneration(
+                    order.UseSeparateFiles, order.SavePath, renewalMode,
+                    order.HttpWebRoot, newChallenges, user.Username, order.EffectiveOutputFormat, order.PfxPassword);
+
+                if (order.AutoImport)
+                {
+                    order.ImportedThumbprint = AcmeService.ImportPfxToLocalMachine(
+                        certPem, certKey, order.PfxPassword, order.ImportedThumbprint);
+                    await logger.Info(
+                        $"[{user.Username}]: Imported renewed certificate into Local Computer > Personal ({order.ImportedThumbprint}).");
+                }
+
+                foreach (var challenge in newChallenges) challenge.Status = "Valid";
+                using var certificate = X509Certificate2.CreateFromPem(certPem);
+                order.Challenges = newChallenges;
+                order.CertPem = certPem;
+                order.CertKey = certKey;
+                order.OrderUrl = acme._order.OrderUrl;
+                order.CreationDate = DateTime.UtcNow;
+                order.ExpiryDate = certificate.NotAfter.ToUniversalTime();
+                order.SuccessfulRenewals++;
+                await CertRepository.UpdateCertRecord(order);
+
+                _ = NotificationService.NotifyUserAsync(order.UserId, "RenewSuccess",
+                    $"SphereSSL: HTTP-01 certificate renewed successfully for {string.Join(", ", domains)}. New expiry: {order.ExpiryDate:yyyy-MM-dd}.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                order.FailedRenewals++;
+                await CertRepository.UpdateCertRecord(order);
+                reportError?.Invoke(ex.Message);
+                await logger.Error($"HTTP-01 renewal failed for {orderId}: {ex.Message}");
+                _ = NotificationService.NotifyUserAsync(order.UserId, "RenewFail",
+                    $"SphereSSL: HTTP-01 certificate renewal FAILED for {string.Join(", ", order.Challenges.Select(c => c.Domain))}: {ex.Message}");
+                return false;
+            }
+        }
         public async Task<bool> RenewCertRecordWithAutoDNSById(Logger logger, string orderId)
         {
 
@@ -239,7 +336,7 @@ namespace SphereSSLv2.Services.CertServices
                             _challenge.Status = "Valid";
                         }
 
-                        var (certPem, certKey) = await ACME.ProcessCertificateGeneration(order.UseSeparateFiles, order.SavePath, order.Challenges, username);
+                        var (certPem, certKey) = await ACME.ProcessCertificateGeneration(order.UseSeparateFiles, order.SavePath, order.Challenges, username, order.EffectiveOutputFormat, order.PfxPassword);
                         order.CertPem = certPem;
                         order.CertKey = certKey;
 
@@ -512,7 +609,7 @@ namespace SphereSSLv2.Services.CertServices
                         _challenge.Status = "Valid";
                     }
 
-                    var (certPem2, certKey2) = await ACME.ProcessCertificateGeneration(order.UseSeparateFiles, order.SavePath, order.Challenges, username);
+                    var (certPem2, certKey2) = await ACME.ProcessCertificateGeneration(order.UseSeparateFiles, order.SavePath, order.Challenges, username, order.EffectiveOutputFormat, order.PfxPassword);
                     order.CertPem = certPem2;
                     order.CertKey = certKey2;
 

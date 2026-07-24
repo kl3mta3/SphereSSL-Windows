@@ -39,6 +39,9 @@ namespace SphereSSLv2.Controllers
             if (cert == null)
                 return NotFound(new { error = $"Certificate record not found for domain '{domain}'." });
 
+            if (string.Equals(cert.ChallengeType, "http-01", StringComparison.OrdinalIgnoreCase))
+                return NotFound(new { error = "HTTP-01 certificates are not available through this API." });
+
             // Validate the cert-specific API key
             if (string.IsNullOrEmpty(cert.CertApiKey) || !CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(cert.CertApiKey), Encoding.UTF8.GetBytes(apiKey.ToString())))
                 return Unauthorized(new { error = "Invalid API key for this domain." });

@@ -587,6 +587,10 @@ namespace SphereSSLv2.Pages
             {
                 return Content("<p class='text-danger'>No record found with that ID.</p>");
             }
+            var isHttpRecord = string.Equals(record.ChallengeType, "http-01", StringComparison.OrdinalIgnoreCase);
+            var httpModeLabel = isHttpRecord && string.Equals(record.HttpValidationMode, "webroot", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(record.HttpWebRoot)
+                ? "Public Webroot"
+                : "Temporary Challenge Server (TCS)";
             var username = await _userRepository.GetUsernameByIdAsync(record.UserId);
             if (!string.IsNullOrEmpty(username)) { }
             else
@@ -630,6 +634,19 @@ namespace SphereSSLv2.Pages
 
             foreach (var challenge in record.Challenges)
             {
+                if (isHttpRecord)
+                {
+                    var httpDomainLink = $"https://{challenge.Domain}";
+                    html += $@"
+                    <div class='mb-3 pb-2 border-bottom'>
+                        <div><strong>Domain:</strong> <a href='{httpDomainLink}' target='_blank' class='text-primary text-decoration-underline'>{challenge.Domain}</a></div>
+                        <div><strong>Validation Mode:</strong> <span class='badge bg-info text-dark'>{httpModeLabel}</span></div>
+                        {(httpModeLabel == "Public Webroot" ? $"<div><strong>Public Webroot:</strong> <code>{System.Net.WebUtility.HtmlEncode(record.HttpWebRoot)}</code></div>" : string.Empty)}
+                        <div><strong>Certificate Format:</strong> <span>{record.EffectiveOutputFormat.ToUpperInvariant()}</span></div>
+                        <div><strong>Challenge Status:</strong> <span>{challenge.Status}</span></div>
+                    </div>";
+                    continue;
+                }
                 string domain = challenge.Domain;
                 if (domain.Contains("*."))
                 {
@@ -864,7 +881,7 @@ namespace SphereSSLv2.Pages
                             challenge.Status = "Valid";
                         }
 
-                        var (certPem, certKey) = await ACME.ProcessCertificateGeneration(order.UseSeparateFiles, order.SavePath, order.Challenges, CurrentUser.Username);
+                        var (certPem, certKey) = await ACME.ProcessCertificateGeneration(order.UseSeparateFiles, order.SavePath, order.Challenges, CurrentUser.Username, order.EffectiveOutputFormat, order.PfxPassword);
                         order.CertPem = certPem;
                         order.CertKey = certKey;
 
@@ -958,6 +975,16 @@ namespace SphereSSLv2.Pages
             _runningCertGeneration = false;
 
             return Content(html, "text/html");
+        }
+
+        public IActionResult OnGetDownloadCertPfx(string savePath)
+        {
+            string file = Path.Combine(AppContext.BaseDirectory, "Temp", "tempCert.pfx");
+            if (!System.IO.File.Exists(file))
+                return NotFound();
+            var bytes = System.IO.File.ReadAllBytes(file);
+            System.IO.File.Delete(file);
+            return File(bytes, "application/x-pkcs12", "certificate.pfx");
         }
 
         public IActionResult OnGetDownloadCertPem(string savePath)

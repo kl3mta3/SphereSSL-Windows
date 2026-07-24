@@ -1,4 +1,4 @@
-﻿using SphereSSLv2.Data.Repositories;
+using SphereSSLv2.Data.Repositories;
 using SphereSSLv2.Models.CertModels;
 using SphereSSLv2.Services.Config;
 
@@ -67,7 +67,9 @@ namespace SphereSSLv2.Services.CertServices
 
                     CertRecordServiceManager certManager = new CertRecordServiceManager();
                     // Attempt auto-renew (success is true only if all pass)
-                    success &= await certManager.RenewCertRecordWithAutoDNSById(_logger, cert.OrderId);
+                    success &= string.Equals(cert.ChallengeType, "http-01", StringComparison.OrdinalIgnoreCase)
+                        ? await certManager.RenewHttpCertificateById(_logger, cert.OrderId)
+                        : await certManager.RenewCertRecordWithAutoDNSById(_logger, cert.OrderId);
                 }
 
                 if (success)

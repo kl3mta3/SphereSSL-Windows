@@ -1,4 +1,4 @@
-﻿﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en" data-bs-theme="light">
 
 <head>
@@ -65,6 +65,7 @@
                     <span class="sidebar-text">Home</span>
                 </a>
 
+
                 <a asp-page="/ManageRenewals" class="sidebar-link @(routePage == "/managerenewals" ? "active" : "")">
                     <span class="sidebar-icon"><i class="bi bi-arrow-repeat"></i></span>
                     <span class="sidebar-text">Manage</span>
@@ -73,6 +74,11 @@
                 <a asp-page="/Exchange" class="sidebar-link @(routePage == "/exchange" ? "active" : "")">
                     <span class="sidebar-icon"><i class="bi bi-shuffle"></i></span>
                     <span class="sidebar-text">Exchange</span>
+                </a>
+				
+				<a asp-page="/Http01" class="sidebar-link @(routePage == "/http01" ? "active" : "")">
+                    <span class="sidebar-icon"><i class="bi bi-globe2"></i></span>
+                    <span class="sidebar-text">HTTP</span>
                 </a>
 
                 <a asp-page="/LearnMore" class="sidebar-link @(routePage == "/learnmore" ? "active" : "")">
@@ -299,7 +305,7 @@
 
                 <div id="downloadButton" style="display: none;" gap-2">
                     <span class="me-2 text-success fw-semibold">Certificate saved! Download a copy?</span>
-                    <button class="btn btn-primary" onclick="window.location.href='/Dashboard?handler=DownloadCertPem&savePath=Temp'">
+                    <button class="btn btn-primary" id="singleCertificateDownloadButton" onclick="window.location.href='/Dashboard?handler=DownloadCertPem&savePath=Temp'">
                         Download PEM
                     </button>
                 </div>
@@ -1196,6 +1202,8 @@
 
         // Wire Request API button
         const btnApi = document.getElementById('btnRequestApi');
+        const challengeType = row?.dataset.challengeType || "dns-01";
+        if (btnApi) btnApi.style.display = challengeType.toLowerCase() === "http-01" ? "none" : "";
         if (btnApi) {
             btnApi.onclick = async function () {
                 manageModal.hide();

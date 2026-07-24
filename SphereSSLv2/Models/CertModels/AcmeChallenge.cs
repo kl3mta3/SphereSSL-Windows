@@ -1,4 +1,4 @@
-﻿using Newtonsoft.Json;
+using Newtonsoft.Json;
 
 namespace SphereSSLv2.Models.CertModels
 {
@@ -21,6 +21,12 @@ namespace SphereSSLv2.Models.CertModels
 
         [JsonProperty("dnsChallengeToken")]
         public string DnsChallengeToken { get; set; } = string.Empty;
+
+        [JsonProperty("httpToken")]
+        public string HttpToken { get; set; } = string.Empty;
+
+        [JsonProperty("httpKeyAuthorization")]
+        public string HttpKeyAuthorization { get; set; } = string.Empty;
 
         [JsonProperty("provider")]
         public string ProviderId { get; set; } = string.Empty;

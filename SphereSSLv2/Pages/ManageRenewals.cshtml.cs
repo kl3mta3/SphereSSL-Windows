@@ -124,6 +124,20 @@ namespace SphereSSLv2.Pages
             {
                 
                 CertRecordServiceManager certManager = new CertRecordServiceManager();
+                if (string.Equals(order.ChallengeType, "http-01", StringComparison.OrdinalIgnoreCase))
+                {
+                    string? renewalError = null;
+                    var renewed = await certManager.RenewHttpCertificateById(_logger, orderId, error => renewalError = error);
+                    ConfigureService.CertRecordCache.Remove(order.OrderId);
+                    ConfigureService.AcmeServiceCache.Remove(order.OrderId);
+                    return new JsonResult(new
+                    {
+                        status = renewed ? "success" : "fail",
+                        autoRenewed = renewed,
+                        order = (CertRecord?)null,
+                        message = renewed ? "HTTP-01 certificate renewed successfully" : $"HTTP-01 renewal failed: {renewalError ?? "Unknown error"}"
+                    });
+                }
                 if (order.autoRenew)
                 {
 
@@ -526,6 +540,7 @@ namespace SphereSSLv2.Pages
 
             var cert = await CertRepository.GetCertRecordByOrderId(orderId);
             if (cert == null) return NotFound();
+            if (string.Equals(cert.ChallengeType, "http-01", StringComparison.OrdinalIgnoreCase)) return NotFound();
 
             if (!string.Equals(CurrentUser.Role, "SuperAdmin", StringComparison.OrdinalIgnoreCase) && cert.UserId != CurrentUser.UserId)
                 return Forbid();
@@ -550,6 +565,7 @@ namespace SphereSSLv2.Pages
 
             var cert = await CertRepository.GetCertRecordByOrderId(request.OrderId);
             if (cert == null) return NotFound();
+            if (string.Equals(cert.ChallengeType, "http-01", StringComparison.OrdinalIgnoreCase)) return NotFound();
             if (!string.Equals(CurrentUser.Role, "SuperAdmin", StringComparison.OrdinalIgnoreCase) && cert.UserId != CurrentUser.UserId)
                 return Forbid();
 
@@ -666,10 +682,12 @@ namespace SphereSSLv2.Pages
                     var order = await CertRepository.GetCertRecordByOrderId(orderId);
                     if (order == null || !CanAccessCertificate(order)) { failed++; continue; }
                     if (!order.autoRenew) { skipped++; continue; }
-                    if (order.Challenges.Any(c => string.IsNullOrWhiteSpace(c.ProviderId))) { failed++; continue; }
+                    bool isHttp = string.Equals(order.ChallengeType, "http-01", StringComparison.OrdinalIgnoreCase);
+                    if (!isHttp && order.Challenges.Any(c => string.IsNullOrWhiteSpace(c.ProviderId))) { failed++; continue; }
 
                     var certManager = new CertRecordServiceManager();
-                    await certManager.RenewCertRecordWithAutoDNSById(_logger, orderId);
+                    if (isHttp) await certManager.RenewHttpCertificateById(_logger, orderId);
+                    else await certManager.RenewCertRecordWithAutoDNSById(_logger, orderId);
                     ConfigureService.CertRecordCache.Remove(orderId);
                     ConfigureService.AcmeServiceCache.Remove(orderId);
                     succeeded++;

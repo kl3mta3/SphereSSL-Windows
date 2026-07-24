@@ -40,6 +40,10 @@ namespace SphereSSLv2.Data.Database
                     CreationTime TEXT NOT NULL,
                     ExpiryDate TEXT NOT NULL,
                     UseSeparateFiles INTEGER DEFAULT 0,
+                    OutputFormat TEXT DEFAULT '',
+                    PfxPassword TEXT DEFAULT '',
+                    AutoImport INTEGER DEFAULT 0,
+                    ImportedThumbprint TEXT DEFAULT '',
                     SaveForRenewal INTEGER DEFAULT 0,
                     AutoRenew INTEGER DEFAULT 0,
                     FailedRenewals INTEGER DEFAULT 0,
@@ -48,6 +52,8 @@ namespace SphereSSLv2.Data.Database
                     AccountID TEXT,
                     OrderUrl TEXT,
                     ChallengeType TEXT,
+                    HttpValidationMode TEXT DEFAULT '',
+                    HttpWebRoot TEXT DEFAULT '',
                     Thumbprint TEXT,
                     CertPem TEXT DEFAULT '',
                     CertKey TEXT DEFAULT '',
@@ -66,6 +72,10 @@ namespace SphereSSLv2.Data.Database
                     ExpiryDate TEXT NOT NULL,
                     RevokeDate TEXT NOT NULL,
                     UseSeparateFiles INTEGER DEFAULT 0,
+                    OutputFormat TEXT DEFAULT '',
+                    PfxPassword TEXT DEFAULT '',
+                    AutoImport INTEGER DEFAULT 0,
+                    ImportedThumbprint TEXT DEFAULT '',
                     SaveForRenewal INTEGER DEFAULT 0,
                     AutoRenew INTEGER DEFAULT 0,
                     FailedRenewals INTEGER DEFAULT 0,
@@ -74,6 +84,8 @@ namespace SphereSSLv2.Data.Database
                     AccountID TEXT,
                     OrderUrl TEXT,
                     ChallengeType TEXT,
+                    HttpValidationMode TEXT DEFAULT '',
+                    HttpWebRoot TEXT DEFAULT '',
                     Thumbprint TEXT,
                     FOREIGN KEY(UserId) REFERENCES Users(UserId) ON DELETE SET NULL
                 );
@@ -351,8 +363,64 @@ namespace SphereSSLv2.Data.Database
                     UPDATE DbVersion SET Version = 4 WHERE Id = 1;";
                 await cmd4.ExecuteNonQueryAsync();
             }
+            if (version < 5)
+            {
+                using var conn5 = new SqliteConnection($"Data Source={ConfigureService.dbPath}");
+                await conn5.OpenAsync();
+                foreach (var sql in new[]
+                {
+                    "ALTER TABLE CertRecords ADD COLUMN HttpValidationMode TEXT DEFAULT '';",
+                    "ALTER TABLE CertRecords ADD COLUMN HttpWebRoot TEXT DEFAULT '';",
+                    "ALTER TABLE RevokedRecords ADD COLUMN HttpValidationMode TEXT DEFAULT '';",
+                    "ALTER TABLE RevokedRecords ADD COLUMN HttpWebRoot TEXT DEFAULT '';"
+                })
+                {
+                    try { var cmd = conn5.CreateCommand(); cmd.CommandText = sql; await cmd.ExecuteNonQueryAsync(); }
+                    catch (SqliteException ex) when (ex.SqliteErrorCode == 1 && ex.Message.Contains("duplicate column", StringComparison.OrdinalIgnoreCase)) { }
+                }
+                var v = conn5.CreateCommand();
+                v.CommandText = "UPDATE DbVersion SET Version = 5 WHERE Id = 1;";
+                await v.ExecuteNonQueryAsync();
+            }
+            if (version < 6)
+            {
+                using var conn6 = new SqliteConnection($"Data Source={ConfigureService.dbPath}");
+                await conn6.OpenAsync();
+                foreach (var sql in new[]
+                {
+                    "ALTER TABLE CertRecords ADD COLUMN OutputFormat TEXT DEFAULT '';",
+                    "ALTER TABLE CertRecords ADD COLUMN PfxPassword TEXT DEFAULT '';",
+                    "ALTER TABLE RevokedRecords ADD COLUMN OutputFormat TEXT DEFAULT '';",
+                    "ALTER TABLE RevokedRecords ADD COLUMN PfxPassword TEXT DEFAULT '';"
+                })
+                {
+                    try { var cmd = conn6.CreateCommand(); cmd.CommandText = sql; await cmd.ExecuteNonQueryAsync(); }
+                    catch (SqliteException ex) when (ex.SqliteErrorCode == 1 && ex.Message.Contains("duplicate column", StringComparison.OrdinalIgnoreCase)) { }
+                }
+                var v = conn6.CreateCommand();
+                v.CommandText = "UPDATE DbVersion SET Version = 6 WHERE Id = 1;";
+                await v.ExecuteNonQueryAsync();
+            }
+            if (version < 7)
+            {
+                using var conn7 = new SqliteConnection($"Data Source={ConfigureService.dbPath}");
+                await conn7.OpenAsync();
+                foreach (var sql in new[]
+                {
+                    "ALTER TABLE CertRecords ADD COLUMN AutoImport INTEGER DEFAULT 0;",
+                    "ALTER TABLE CertRecords ADD COLUMN ImportedThumbprint TEXT DEFAULT '';",
+                    "ALTER TABLE RevokedRecords ADD COLUMN AutoImport INTEGER DEFAULT 0;",
+                    "ALTER TABLE RevokedRecords ADD COLUMN ImportedThumbprint TEXT DEFAULT '';"
+                })
+                {
+                    try { var cmd = conn7.CreateCommand(); cmd.CommandText = sql; await cmd.ExecuteNonQueryAsync(); }
+                    catch (SqliteException ex) when (ex.SqliteErrorCode == 1 && ex.Message.Contains("duplicate column", StringComparison.OrdinalIgnoreCase)) { }
+                }
+                var v = conn7.CreateCommand();
+                v.CommandText = "UPDATE DbVersion SET Version = 7 WHERE Id = 1;";
+                await v.ExecuteNonQueryAsync();
+            }
         }
-
         //DB Version and Migration
         public static async Task<int> GetDatabaseVersion()
         {

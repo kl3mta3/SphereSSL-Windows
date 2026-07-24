@@ -1,4 +1,4 @@
-﻿using Newtonsoft.Json;
+using Newtonsoft.Json;
 
 
 namespace SphereSSLv2.Models.CertModels
@@ -33,6 +33,23 @@ namespace SphereSSLv2.Models.CertModels
         [JsonProperty("useSeparateFiles")]
         public bool UseSeparateFiles { get; set; } = false;
 
+        [JsonProperty("outputFormat")]
+        public string OutputFormat { get; set; } = string.Empty;
+
+        [JsonIgnore]
+        public string EffectiveOutputFormat => string.IsNullOrWhiteSpace(OutputFormat)
+            ? (UseSeparateFiles ? "separate" : "pem")
+            : OutputFormat.ToLowerInvariant();
+
+        [JsonProperty("pfxPassword")]
+        public string PfxPassword { get; set; } = string.Empty;
+
+        [JsonProperty("autoImport")]
+        public bool AutoImport { get; set; } = false;
+
+        [JsonProperty("importedThumbprint")]
+        public string ImportedThumbprint { get; set; } = string.Empty;
+
         [JsonProperty("saveForRenewal")]
         public bool SaveForRenewal { get; set; } = false;
 
@@ -56,6 +73,12 @@ namespace SphereSSLv2.Models.CertModels
 
         [JsonProperty("challengeType")]
         public string ChallengeType { get; set; } = string.Empty;
+
+        [JsonProperty("httpValidationMode")]
+        public string HttpValidationMode { get; set; } = string.Empty;
+
+        [JsonProperty("httpWebRoot")]
+        public string HttpWebRoot { get; set; } = string.Empty;
 
         [JsonProperty("thumbprint")]
         public string Thumbprint { get; set; } = string.Empty;
