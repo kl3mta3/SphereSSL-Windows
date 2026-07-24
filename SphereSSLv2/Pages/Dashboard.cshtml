@@ -139,6 +139,16 @@
                                         </label>
                                     </div>
 
+                                    <div class="form-check mb-3 d-none" id="dnsAutoImportRow">
+                                        <input class="form-check-input" type="checkbox" id="dnsAutoImport"
+                                               data-restricted="@restrictViewerFields.ToString().ToLowerInvariant()"
+                                               @(restrictViewerFields ? "disabled" : "") />
+                                        <label class="form-check-label @(restrictViewerFields ? "text-muted" : "")" for="dnsAutoImport">
+                                            Auto Import
+                                            <i class="bi bi-info-circle info-icon ms-1"
+                                               title="Imports the PFX into Local Computer > Personal. SphereSSL must run as administrator."></i>
+                                        </label>
+                                    </div>
                                     <button type="submit" id="startButton" class="btn-glow w-40">Start</button>
 
 
@@ -546,8 +556,16 @@
 <!-- Submit Quick Connect -->
 <script>
     const updateDashboardPfxVisibility = () => {
+        const pfxSelected = document.getElementById('usePfxFile')?.checked === true;
         const section = document.getElementById('pfxPasswordSection');
-        if (section) section.classList.toggle('d-none', !document.getElementById('usePfxFile')?.checked);
+        const autoImportRow = document.getElementById('dnsAutoImportRow');
+        const autoImport = document.getElementById('dnsAutoImport');
+        if (section) section.classList.toggle('d-none', !pfxSelected);
+        if (autoImportRow) autoImportRow.classList.toggle('d-none', !pfxSelected);
+        if (autoImport) {
+            autoImport.disabled = !pfxSelected || autoImport.dataset.restricted === 'true';
+            if (!pfxSelected) autoImport.checked = false;
+        }
     };
     document.querySelectorAll('input[name="certFormat"]')?.forEach(input => input.addEventListener('change', updateDashboardPfxVisibility));
     updateDashboardPfxVisibility();
@@ -589,6 +607,7 @@
             useSeparateFiles: useSeparateFiles,
             outputFormat: outputFormat,
             pfxPassword: pfxPassword,
+            autoImport: document.getElementById('dnsAutoImport').checked,
             saveForRenewal: document.getElementById("saveForRenewal").checked,
             autoRenew: document.getElementById("autoRenew").checked
         };

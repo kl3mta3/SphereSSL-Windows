@@ -133,8 +133,14 @@ namespace SphereSSLv2.Pages
                 {
                     order.SaveForRenewal = false;
                     order.autoRenew = false;
+                    order.AutoImport = false;
                     request.AutoAdd = false;
                 }
+
+                if (order.AutoImport && !string.Equals(order.EffectiveOutputFormat, "pfx", StringComparison.OrdinalIgnoreCase))
+                    return BadRequest("Auto Import requires the PFX certificate format.");
+                if (order.AutoImport)
+                    AcmeService.EnsureLocalMachineCertificateStoreWritable();
 
                 bool _useStaging = request.UseStaging || ConfigureService.StagingOnly;
                 string _baseAddress = _useStaging
@@ -884,6 +890,12 @@ namespace SphereSSLv2.Pages
                         var (certPem, certKey) = await ACME.ProcessCertificateGeneration(order.UseSeparateFiles, order.SavePath, order.Challenges, CurrentUser.Username, order.EffectiveOutputFormat, order.PfxPassword);
                         order.CertPem = certPem;
                         order.CertKey = certKey;
+                        if (order.AutoImport)
+                        {
+                            order.ImportedThumbprint = AcmeService.ImportPfxToLocalMachine(
+                                certPem, certKey, order.PfxPassword, order.ImportedThumbprint);
+                            await _logger.Info($"[{CurrentUser.Username}]: Imported DNS-01 certificate into Local Computer > Personal ({order.ImportedThumbprint}).");
+                        }
 
                         if (order.SaveForRenewal)
                         {

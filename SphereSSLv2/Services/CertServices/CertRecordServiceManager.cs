@@ -166,6 +166,16 @@ namespace SphereSSLv2.Services.CertServices
                 return false;
             }
 
+            if (order.AutoImport)
+            {
+                if (!string.Equals(order.EffectiveOutputFormat, "pfx", StringComparison.OrdinalIgnoreCase))
+                {
+                    await logger.Error($"[{order.UserId}]: Auto Import requires the PFX certificate format.");
+                    return false;
+                }
+                AcmeService.EnsureLocalMachineCertificateStoreWritable();
+            }
+
             if (order.autoRenew)
             {
                 AcmeService acme = new AcmeService(logger);
@@ -339,6 +349,12 @@ namespace SphereSSLv2.Services.CertServices
                         var (certPem, certKey) = await ACME.ProcessCertificateGeneration(order.UseSeparateFiles, order.SavePath, order.Challenges, username, order.EffectiveOutputFormat, order.PfxPassword);
                         order.CertPem = certPem;
                         order.CertKey = certKey;
+                        if (order.AutoImport)
+                        {
+                            order.ImportedThumbprint = AcmeService.ImportPfxToLocalMachine(
+                                certPem, certKey, order.PfxPassword, order.ImportedThumbprint);
+                            await logger.Info($"[{username}]: Imported renewed DNS-01 certificate into Local Computer > Personal ({order.ImportedThumbprint}).");
+                        }
 
                         if (order.SaveForRenewal)
                         {
@@ -565,6 +581,15 @@ namespace SphereSSLv2.Services.CertServices
             }
 
             string username = user.Username;
+            if (order.AutoImport)
+            {
+                if (!string.Equals(order.EffectiveOutputFormat, "pfx", StringComparison.OrdinalIgnoreCase))
+                {
+                    await logger.Error($"[{username}]: Auto Import requires the PFX certificate format.");
+                    return false;
+                }
+                AcmeService.EnsureLocalMachineCertificateStoreWritable();
+            }
             while (attempt < maxAttempts)
             {
                 await logger.Info($"[{username}]: Attempting DNS verification (try {attempt + 1} of {maxAttempts})...");
@@ -612,6 +637,12 @@ namespace SphereSSLv2.Services.CertServices
                     var (certPem2, certKey2) = await ACME.ProcessCertificateGeneration(order.UseSeparateFiles, order.SavePath, order.Challenges, username, order.EffectiveOutputFormat, order.PfxPassword);
                     order.CertPem = certPem2;
                     order.CertKey = certKey2;
+                    if (order.AutoImport)
+                    {
+                        order.ImportedThumbprint = AcmeService.ImportPfxToLocalMachine(
+                            certPem2, certKey2, order.PfxPassword, order.ImportedThumbprint);
+                        await logger.Info($"[{username}]: Imported manually renewed DNS-01 certificate into Local Computer > Personal ({order.ImportedThumbprint}).");
+                    }
 
                     if (order.SaveForRenewal)
                     {
