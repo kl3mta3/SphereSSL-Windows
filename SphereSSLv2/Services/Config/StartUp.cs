@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc;
 using System.Net;
 using System.Diagnostics;
 using SphereSSLv2.Testing;
@@ -41,6 +41,7 @@ namespace SphereSSLv2.Services.Config
             builder.Services.AddScoped<CertRepository>();
             builder.Services.AddScoped<DnsProviderRepository>();
             builder.Services.AddScoped<ApiRepository>();
+            builder.Services.AddScoped<ConnectionRepository>();
 
             // CORS Policy
             builder.Services.AddCors(options =>

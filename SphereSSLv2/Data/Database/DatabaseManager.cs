@@ -1,4 +1,4 @@
-﻿using Microsoft.Data.Sqlite;
+using Microsoft.Data.Sqlite;
 using SphereSSLv2.Data.Repositories;
 using SphereSSLv2.Services.Config;
 
@@ -49,6 +49,9 @@ namespace SphereSSLv2.Data.Database
                     OrderUrl TEXT,
                     ChallengeType TEXT,
                     Thumbprint TEXT,
+                    CertPem TEXT DEFAULT '',
+                    CertKey TEXT DEFAULT '',
+                    CertApiKey TEXT DEFAULT '',
                     FOREIGN KEY(UserId) REFERENCES Users(UserId) ON DELETE SET NULL
                 );
 
@@ -187,7 +190,22 @@ namespace SphereSSLv2.Data.Database
                     Message TEXT,
                     Timestamp DATETIME,
                     FOREIGN KEY(UserId) REFERENCES Users(UserId) ON DELETE CASCADE
-                ); 
+                );
+
+                CREATE TABLE IF NOT EXISTS UserConnections (
+                    ConnectionId   TEXT PRIMARY KEY,
+                    UserId         TEXT NOT NULL,
+                    ConnectionName TEXT NOT NULL,
+                    ConnectionType TEXT NOT NULL,
+                    IsEnabled      INTEGER DEFAULT 1,
+                    Settings       TEXT DEFAULT '{{}}',
+                    OnPreRenew     INTEGER DEFAULT 1,
+                    OnPreExpiry    INTEGER DEFAULT 1,
+                    OnRenewSuccess INTEGER DEFAULT 1,
+                    OnRenewFail    INTEGER DEFAULT 1,
+                    CreatedAt      TEXT NOT NULL,
+                    FOREIGN KEY(UserId) REFERENCES Users(UserId) ON DELETE CASCADE
+                );
 
                 ";
 
@@ -198,13 +216,16 @@ namespace SphereSSLv2.Data.Database
                 await command.ExecuteNonQueryAsync();
 
 
+                // Apply schema upgrades before any repository or seed operation reads new columns.
+                await MigrateAsync();
+
                 // Insert defaultSuperAdmin User record
-                command.CommandText = "SELECT COUNT(1) FROM Users WHERE Name = @name";
+                command.CommandText = "SELECT UserId FROM Users WHERE Name = @name LIMIT 1";
                 command.Parameters.Clear();
                 command.Parameters.AddWithValue("@name", "Locke-Ann Key");
-                var exists = (long)await command.ExecuteScalarAsync();
+                var existingAdminId = await command.ExecuteScalarAsync();
 
-                if (exists == 0)
+                if (existingAdminId == null)
                 {
                     command.CommandText = @"
                     INSERT OR IGNORE INTO Users (
@@ -224,7 +245,10 @@ namespace SphereSSLv2.Data.Database
                     await command.ExecuteNonQueryAsync();
 
                 }
-
+                else
+                {
+                    adminUserId = Convert.ToString(existingAdminId) ?? adminUserId;
+                }
 
                 command.CommandText = "SELECT COUNT(1) FROM UserRoles WHERE UserId = @userId AND Role = @role";
                 command.Parameters.Clear();
@@ -255,12 +279,77 @@ namespace SphereSSLv2.Data.Database
                     command.Parameters.AddWithValue("@logId", Guid.NewGuid().ToString("N"));
                     await command.ExecuteNonQueryAsync();
                 }
-
                 await HealthRepository.RecalculateHealthStats();
             }
             catch (Exception ex)
             {
+                Console.Error.WriteLine($"[DATABASE] Initialization failed: {ex}");
+                throw;
+            }
+        }
 
+        private static async Task MigrateAsync()
+        {
+            int version = await GetDatabaseVersion();
+
+            if (version < 2)
+            {
+                using var conn = new SqliteConnection($"Data Source={ConfigureService.dbPath}");
+                await conn.OpenAsync();
+                foreach (var sql in new[]
+                {
+                    "ALTER TABLE CertRecords ADD COLUMN CertPem TEXT DEFAULT '';",
+                    "ALTER TABLE CertRecords ADD COLUMN CertKey TEXT DEFAULT '';",
+                    "ALTER TABLE RevokedRecords ADD COLUMN CertPem TEXT DEFAULT '';",
+                    "ALTER TABLE RevokedRecords ADD COLUMN CertKey TEXT DEFAULT '';"
+                })
+                {
+                    try { var cmd = conn.CreateCommand(); cmd.CommandText = sql; await cmd.ExecuteNonQueryAsync(); }
+                    catch { /* column already exists */ }
+                }
+                var v = conn.CreateCommand();
+                v.CommandText = "UPDATE DbVersion SET Version = 2 WHERE Id = 1;";
+                await v.ExecuteNonQueryAsync();
+            }
+
+            if (version < 3)
+            {
+                using var conn = new SqliteConnection($"Data Source={ConfigureService.dbPath}");
+                await conn.OpenAsync();
+                try
+                {
+                    var cmd = conn.CreateCommand();
+                    cmd.CommandText = "ALTER TABLE CertRecords ADD COLUMN CertApiKey TEXT DEFAULT '';";
+                    await cmd.ExecuteNonQueryAsync();
+                }
+                catch { /* column already exists */ }
+                var v = conn.CreateCommand();
+                v.CommandText = "UPDATE DbVersion SET Version = 3 WHERE Id = 1;";
+                await v.ExecuteNonQueryAsync();
+            }
+
+            if (version < 4)
+            {
+                using var conn4 = new SqliteConnection($"Data Source={ConfigureService.dbPath}");
+                await conn4.OpenAsync();
+                var cmd4 = conn4.CreateCommand();
+                cmd4.CommandText = @"
+                    CREATE TABLE IF NOT EXISTS UserConnections (
+                        ConnectionId   TEXT PRIMARY KEY,
+                        UserId         TEXT NOT NULL,
+                        ConnectionName TEXT NOT NULL,
+                        ConnectionType TEXT NOT NULL,
+                        IsEnabled      INTEGER DEFAULT 1,
+                        Settings       TEXT DEFAULT '{}',
+                        OnPreRenew     INTEGER DEFAULT 1,
+                        OnPreExpiry    INTEGER DEFAULT 1,
+                        OnRenewSuccess INTEGER DEFAULT 1,
+                        OnRenewFail    INTEGER DEFAULT 1,
+                        CreatedAt      TEXT NOT NULL,
+                        FOREIGN KEY(UserId) REFERENCES Users(UserId) ON DELETE CASCADE
+                    );
+                    UPDATE DbVersion SET Version = 4 WHERE Id = 1;";
+                await cmd4.ExecuteNonQueryAsync();
             }
         }
 

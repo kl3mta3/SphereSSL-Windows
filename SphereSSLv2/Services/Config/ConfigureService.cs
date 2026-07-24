@@ -1,4 +1,4 @@
-﻿// Ignore Spelling: Spheressl
+// Ignore Spelling: Spheressl
 
 using DnsClient;
 using DnsClient.Protocol;
@@ -29,6 +29,14 @@ namespace SphereSSLv2.Services.Config
         internal static int ServerPort { get; set; } = 7171;
         public static double RefreshExpiringSoonRateInHours { get; } = 24;
         public static double ExpiringRefreshPeriodInDays { get; } = 30;
+        internal static int RenewBeforeExpiryDays { get; set; } = 30;
+        internal static int CertValidityDays { get; set; } = 90;
+        internal static bool StagingOnly { get; set; } = false;
+        internal static bool RestrictViewers { get; set; } = false;
+        internal static bool HideViewerLogout { get; set; } = false;
+        internal static bool DemoLoginEnabled { get; set; } = false;
+        internal static string DemoUsername { get; set; } = string.Empty;
+        internal static string DemoPassword { get; set; } = string.Empty;
         internal static string CAPrimeUrl ;
         internal static string CAStagingUrl ;
         internal static string dbPath = "certificates.db";
@@ -123,7 +131,7 @@ namespace SphereSSLv2.Services.Config
                 if (oldConfig.UseLogOn != config.UseLogOn)
                 {
                     oldConfig.UseLogOn = config.UseLogOn;
-                    UseLogOn = config.UseLogOn ? true : false;
+                    UseLogOn = config.UseLogOn.GetValueOrDefault();
                 }
 
                 if (!string.IsNullOrWhiteSpace(config.CAPrimeUrl) && oldConfig.CAPrimeUrl != config.CAPrimeUrl)
@@ -138,6 +146,22 @@ namespace SphereSSLv2.Services.Config
                     CAStagingUrl = config.CAStagingUrl;
                 }
 
+                if (config.RenewBeforeExpiryDays is > 0)
+                {
+                    oldConfig.RenewBeforeExpiryDays = config.RenewBeforeExpiryDays;
+                    RenewBeforeExpiryDays = config.RenewBeforeExpiryDays.Value;
+                }
+                if (config.CertValidityDays is > 0)
+                {
+                    oldConfig.CertValidityDays = config.CertValidityDays;
+                    CertValidityDays = config.CertValidityDays.Value;
+                }
+                if (config.StagingOnly.HasValue) { oldConfig.StagingOnly = config.StagingOnly; StagingOnly = config.StagingOnly.Value; }
+                if (config.RestrictViewers.HasValue) { oldConfig.RestrictViewers = config.RestrictViewers; RestrictViewers = config.RestrictViewers.Value; }
+                if (config.HideViewerLogout.HasValue) { oldConfig.HideViewerLogout = config.HideViewerLogout; HideViewerLogout = config.HideViewerLogout.Value; }
+                if (config.DemoLoginEnabled.HasValue) { oldConfig.DemoLoginEnabled = config.DemoLoginEnabled; DemoLoginEnabled = config.DemoLoginEnabled.Value; }
+                if (config.DemoUsername != null) { oldConfig.DemoUsername = config.DemoUsername; DemoUsername = config.DemoUsername; }
+                if (config.DemoPassword != null) { oldConfig.DemoPassword = config.DemoPassword; DemoPassword = config.DemoPassword; }
                 string json = JsonSerializer.Serialize(oldConfig, new JsonSerializerOptions { WriteIndented = true });
                 await File.WriteAllTextAsync(ConfigFilePath, json);
             }
@@ -180,12 +204,12 @@ namespace SphereSSLv2.Services.Config
                 string passhash = PasswordService.HashPassword(storedConfig.AdminPassword);
             
               
-                if (!storedConfig.UseLogOn )
+                if (!storedConfig.UseLogOn.GetValueOrDefault())
                 {
                     UseLogOn = false;
                   
                 }
-                else if (storedConfig.UseLogOn)
+                else if (storedConfig.UseLogOn.GetValueOrDefault())
                 {
                     UseLogOn = true;
                    
@@ -203,7 +227,14 @@ namespace SphereSSLv2.Services.Config
                 ServerIP = storedConfig.ServerURL;
                 dbPath = storedConfig.DatabasePath;
                 CAPrimeUrl = storedConfig.CAPrimeUrl;
-                CAStagingUrl = storedConfig.CAStagingUrl;
+                CAStagingUrl = storedConfig.CAStagingUrl;                RenewBeforeExpiryDays = storedConfig.RenewBeforeExpiryDays is > 0 ? storedConfig.RenewBeforeExpiryDays.Value : 30;
+                CertValidityDays = storedConfig.CertValidityDays is > 0 ? storedConfig.CertValidityDays.Value : 90;
+                StagingOnly = storedConfig.StagingOnly.GetValueOrDefault();
+                RestrictViewers = storedConfig.RestrictViewers.GetValueOrDefault();
+                HideViewerLogout = storedConfig.HideViewerLogout.GetValueOrDefault();
+                DemoLoginEnabled = storedConfig.DemoLoginEnabled.GetValueOrDefault();
+                DemoUsername = storedConfig.DemoUsername ?? string.Empty;
+                DemoPassword = storedConfig.DemoPassword ?? string.Empty;
 
 
                 return storedConfig;
@@ -215,6 +246,17 @@ namespace SphereSSLv2.Services.Config
             }
         }
 
+        internal static async Task RestartServer()
+        {
+            using var client = new HttpClient();
+            await client.GetStringAsync("http://localhost:7172/restart/");
+        }
+
+        internal static async Task ResetToFactory()
+        {
+            using var client = new HttpClient();
+            await client.GetStringAsync("http://localhost:7172/factory-reset/");
+        }
         public static string CapitalizeFirstLetter(string input)
         {
             try

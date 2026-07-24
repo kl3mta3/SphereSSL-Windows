@@ -24,7 +24,7 @@ namespace SphereSSLv2.Pages
         private readonly DnsProviderRepository _dnsProviderRepository;
         private readonly CertRepository _certRepository;
         private  ConfigureService _configureService;
-        public readonly double RenewalPeriodDays = ConfigureService.ExpiringRefreshPeriodInDays; // Maximum days before expiry to renew certificates
+        public int RenewalPeriodDays => ConfigureService.RenewBeforeExpiryDays;
 
         public ManageRenewalsModel(UserRepository userRepository, Logger logger, DnsProviderRepository dnsProviderRepository, CertRepository certRepository, ILogger<ManageRenewalsModel> ilogger, ConfigureService configureService)
         {
@@ -58,27 +58,23 @@ namespace SphereSSLv2.Pages
                 return RedirectToPage("/Index");
             }
 
-            bool _isSuperAdmin = string.Equals(CurrentUser.Role, "SuperAdmin", StringComparison.OrdinalIgnoreCase);
+            bool _isAdminOrAbove = string.Equals(CurrentUser.Role, "SuperAdmin", StringComparison.OrdinalIgnoreCase) || CurrentUser.IsAdmin;
 
 
 
-            if (CurrentUser.IsEnabled && _isSuperAdmin)
+            var now = DateTime.UtcNow;
+            if (_isAdminOrAbove)
             {
-                var now = DateTime.UtcNow;
                 CertRecords = await CertRepository.GetAllCertRecords();
-                ExpiringSoonRecords = CertRecords
-                    .FindAll(cert => cert.ExpiryDate >= now && cert.ExpiryDate <= now.AddDays(30));
                 DNSProviders = await _dnsProviderRepository.GetAllDNSProviders();
-
             }
-            else if (CurrentUser.IsEnabled && !_isSuperAdmin)
+            else
             {
-                var now = DateTime.UtcNow;
                 CertRecords = await _certRepository.GetAllCertsForUserIdAsync(CurrentUser.UserId);
-                ExpiringSoonRecords = CertRecords
-                    .FindAll(cert => cert.ExpiryDate >= now && cert.ExpiryDate <= now.AddDays(30));
                 DNSProviders = await _dnsProviderRepository.GetAllDNSProvidersByUserId(CurrentUser.UserId);
             }
+            ExpiringSoonRecords = CertRecords
+                .FindAll(cert => cert.ExpiryDate >= now && cert.ExpiryDate <= now.AddDays(ConfigureService.RenewBeforeExpiryDays));
 
             return Page();
         }
@@ -200,14 +196,14 @@ namespace SphereSSLv2.Pages
                     {
 
 
-                        string ns1 = "—", ns2 = "—", fullDomainName = $"_acme-challenge.{challenge.Domain}", dnsToken = challenge.DnsChallengeToken;
+                        string ns1 = "ï¿½", ns2 = "ï¿½", fullDomainName = $"_acme-challenge.{challenge.Domain}", dnsToken = challenge.DnsChallengeToken;
                         string fullLink = $"https://{challenge.Domain}";
 
                         try
                         {
                             var nsList = await ConfigureService.GetNameServers(challenge.Domain);
-                            ns1 = nsList.ElementAtOrDefault(0) ?? "—";
-                            ns2 = nsList.ElementAtOrDefault(1) ?? "—";
+                            ns1 = nsList.ElementAtOrDefault(0) ?? "ï¿½";
+                            ns2 = nsList.ElementAtOrDefault(1) ?? "ï¿½";
                         }
                         catch { }
                         string[] parts = ns1.Split('.');
@@ -472,6 +468,146 @@ namespace SphereSSLv2.Pages
             });
         }
 
+        // SuperAdmin-only: permanently delete a cert and all of its data from the DB.
+        // Does NOT attempt an ACME revoke; it just removes the record entirely.
+        public async Task<IActionResult> OnPostDeleteCertificateAsync([FromBody] OrderRenewRequest request)
+        {
+            var sessionData = HttpContext.Session.GetString("UserSession");
+            if (sessionData == null) return RedirectToPage("/Index");
+
+            CurrentUser = JsonConvert.DeserializeObject<UserSession>(sessionData);
+            if (CurrentUser == null) return RedirectToPage("/Index");
+
+            if (!string.Equals(CurrentUser.Role, "SuperAdmin", StringComparison.OrdinalIgnoreCase))
+            {
+                await _logger.Error($"[{CurrentUser.Username}]: Only SuperAdmins can delete certificates.");
+                return new JsonResult(new { status = "fail", message = "Only SuperAdmins can delete certificates." });
+            }
+
+            var orderId = request?.OrderId;
+            if (string.IsNullOrEmpty(orderId))
+            {
+                await _logger.Error($"[{CurrentUser.Username}]: Order ID is null or empty.");
+                return BadRequest("Order ID is required.");
+            }
+
+            var order = await CertRepository.GetCertRecordByOrderId(orderId);
+            if (order == null)
+            {
+                // Already gone from CertRecords; still clean up any orphaned challenges/cache.
+                await CertRepository.DeleteAcmeChallengesByOrderIdAsync(orderId);
+                ConfigureService.CertRecordCache.Remove(orderId);
+                ConfigureService.AcmeServiceCache.Remove(orderId);
+                return new JsonResult(new { status = "success", message = "Certificate already removed." });
+            }
+
+            await CertRepository.DeleteAcmeChallengesByOrderIdAsync(orderId);
+            await CertRepository.DeleteCertRecordByOrderId(orderId);
+            await HealthRepository.AdjustTotalCertsInDB(-1);
+
+            ConfigureService.CertRecordCache.Remove(orderId);
+            ConfigureService.AcmeServiceCache.Remove(orderId);
+
+            await _logger.Info($"[{CurrentUser.Username}]: Certificate {orderId} permanently deleted from the database.");
+
+            return new JsonResult(new { status = "success", message = "Certificate deleted." });
+        }
+
+
+        public async Task<IActionResult> OnGetCertApiInfo(string orderId)
+        {
+            var sessionData = HttpContext.Session.GetString("UserSession");
+            if (sessionData == null) return Unauthorized();
+            CurrentUser = JsonConvert.DeserializeObject<UserSession>(sessionData);
+            if (CurrentUser == null) return Unauthorized();
+
+            if (string.IsNullOrEmpty(orderId))
+                return BadRequest("orderId is required.");
+
+            var cert = await CertRepository.GetCertRecordByOrderId(orderId);
+            if (cert == null) return NotFound();
+
+            if (!string.Equals(CurrentUser.Role, "SuperAdmin", StringComparison.OrdinalIgnoreCase) && cert.UserId != CurrentUser.UserId)
+                return Forbid();
+
+            // Generate a cert-specific API key the first time it's requested
+            if (string.IsNullOrEmpty(cert.CertApiKey))
+            {
+                cert.CertApiKey = GenerateCertApiKey();
+                await CertRepository.SaveCertApiKey(orderId, cert.CertApiKey);
+            }
+
+            var domain = cert.Challenges?.FirstOrDefault()?.Domain ?? orderId;
+            return new JsonResult(new { domain, orderId, certApiKey = cert.CertApiKey });
+        }
+
+        public async Task<IActionResult> OnPostRegenerateCertApiKey([FromBody] OrderRenewRequest request)
+        {
+            var sessionData = HttpContext.Session.GetString("UserSession");
+            if (sessionData == null) return Unauthorized();
+            CurrentUser = JsonConvert.DeserializeObject<UserSession>(sessionData);
+            if (CurrentUser == null) return Unauthorized();
+
+            var cert = await CertRepository.GetCertRecordByOrderId(request.OrderId);
+            if (cert == null) return NotFound();
+            if (!string.Equals(CurrentUser.Role, "SuperAdmin", StringComparison.OrdinalIgnoreCase) && cert.UserId != CurrentUser.UserId)
+                return Forbid();
+
+            var newKey = GenerateCertApiKey();
+            await CertRepository.SaveCertApiKey(request.OrderId, newKey);
+            return new JsonResult(new { certApiKey = newKey });
+        }
+
+        private static string GenerateCertApiKey()
+        {
+            var bytes = new byte[24];
+            System.Security.Cryptography.RandomNumberGenerator.Fill(bytes);
+            return Convert.ToHexString(bytes).ToLower();
+        }
+
+        public async Task<IActionResult> OnGetDownloadCertPemById(string orderId)
+        {
+            var sessionData = HttpContext.Session.GetString("UserSession");
+            if (sessionData == null) return RedirectToPage("/Index");
+            CurrentUser = JsonConvert.DeserializeObject<UserSession>(sessionData);
+            if (CurrentUser == null) return RedirectToPage("/Index");
+
+            if (string.IsNullOrEmpty(orderId))
+                return BadRequest("orderId is required.");
+
+            var cert = await CertRepository.GetCertRecordByOrderId(orderId);
+            if (cert == null) return NotFound("Certificate not found.");
+            if (string.IsNullOrEmpty(cert.CertPem))
+                return NotFound("Certificate content not stored â€” re-issue the certificate to enable downloads.");
+
+            if (!string.Equals(CurrentUser.Role, "SuperAdmin", StringComparison.OrdinalIgnoreCase) && cert.UserId != CurrentUser.UserId)
+                return Forbid();
+
+            var domain = cert.Challenges?.FirstOrDefault()?.Domain?.TrimStart('*').TrimStart('.') ?? orderId;
+            return File(System.Text.Encoding.UTF8.GetBytes(cert.CertPem), "application/x-pem-file", $"{domain}.pem");
+        }
+
+        public async Task<IActionResult> OnGetDownloadCertKeyById(string orderId)
+        {
+            var sessionData = HttpContext.Session.GetString("UserSession");
+            if (sessionData == null) return RedirectToPage("/Index");
+            CurrentUser = JsonConvert.DeserializeObject<UserSession>(sessionData);
+            if (CurrentUser == null) return RedirectToPage("/Index");
+
+            if (string.IsNullOrEmpty(orderId))
+                return BadRequest("orderId is required.");
+
+            var cert = await CertRepository.GetCertRecordByOrderId(orderId);
+            if (cert == null) return NotFound("Certificate not found.");
+            if (string.IsNullOrEmpty(cert.CertKey))
+                return NotFound("Private key not stored â€” re-issue the certificate to enable downloads.");
+
+            if (!string.Equals(CurrentUser.Role, "SuperAdmin", StringComparison.OrdinalIgnoreCase) && cert.UserId != CurrentUser.UserId)
+                return Forbid();
+
+            var domain = cert.Challenges?.FirstOrDefault()?.Domain?.TrimStart('*').TrimStart('.') ?? orderId;
+            return File(System.Text.Encoding.UTF8.GetBytes(cert.CertKey), "application/x-pem-file", $"{domain}.key");
+        }
 
         public IActionResult OnGetDownloadCertPem(string savePath)
         {
@@ -507,5 +643,179 @@ namespace SphereSSLv2.Pages
         }
 
 
+        private bool CanAccessCertificate(CertRecord cert)
+        {
+            return CurrentUser != null &&
+                (string.Equals(CurrentUser.Role, "SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(cert.UserId, CurrentUser.UserId, StringComparison.Ordinal));
+        }
+        public async Task<IActionResult> OnPostBulkRenewAsync([FromBody] BulkOrderRequest request)
+        {
+            var sessionData = HttpContext.Session.GetString("UserSession");
+            if (sessionData == null) return RedirectToPage("/Index");
+            CurrentUser = JsonConvert.DeserializeObject<UserSession>(sessionData);
+            if (CurrentUser == null) return RedirectToPage("/Index");
+            if (CurrentUser.Role.Equals("Viewer", StringComparison.OrdinalIgnoreCase))
+                return new JsonResult(new { success = false, message = "Viewers cannot perform bulk renewals." });
+
+            int succeeded = 0, failed = 0, skipped = 0;
+            foreach (var orderId in request.OrderIds)
+            {
+                try
+                {
+                    var order = await CertRepository.GetCertRecordByOrderId(orderId);
+                    if (order == null || !CanAccessCertificate(order)) { failed++; continue; }
+                    if (!order.autoRenew) { skipped++; continue; }
+                    if (order.Challenges.Any(c => string.IsNullOrWhiteSpace(c.ProviderId))) { failed++; continue; }
+
+                    var certManager = new CertRecordServiceManager();
+                    await certManager.RenewCertRecordWithAutoDNSById(_logger, orderId);
+                    ConfigureService.CertRecordCache.Remove(orderId);
+                    ConfigureService.AcmeServiceCache.Remove(orderId);
+                    succeeded++;
+                }
+                catch { failed++; }
+            }
+
+            return new JsonResult(new
+            {
+                succeeded,
+                failed,
+                skipped,
+                message = $"{succeeded} renewed, {skipped} skipped (auto-renew off), {failed} failed."
+            });
+        }
+
+        public async Task<IActionResult> OnPostBulkToggleAsync([FromBody] BulkOrderRequest request)
+        {
+            var sessionData = HttpContext.Session.GetString("UserSession");
+            if (sessionData == null) return RedirectToPage("/Index");
+            CurrentUser = JsonConvert.DeserializeObject<UserSession>(sessionData);
+            if (CurrentUser == null) return RedirectToPage("/Index");
+            if (CurrentUser.Role.Equals("Viewer", StringComparison.OrdinalIgnoreCase))
+                return new JsonResult(new { success = false, message = "Viewers cannot toggle auto-renew." });
+
+            int succeeded = 0, failed = 0;
+            foreach (var orderId in request.OrderIds)
+            {
+                try
+                {
+                    var order = await CertRepository.GetCertRecordByOrderId(orderId);
+                    if (order == null || !CanAccessCertificate(order)) { failed++; continue; }
+                    order.autoRenew = !order.autoRenew;
+                    await CertRepository.UpdateCertRecord(order);
+                    succeeded++;
+                }
+                catch { failed++; }
+            }
+
+            return new JsonResult(new
+            {
+                succeeded,
+                failed,
+                message = $"{succeeded} toggled, {failed} failed."
+            });
+        }
+
+        public async Task<IActionResult> OnPostBulkRevokeAsync([FromBody] BulkOrderRequest request)
+        {
+            var sessionData = HttpContext.Session.GetString("UserSession");
+            if (sessionData == null) return RedirectToPage("/Index");
+            CurrentUser = JsonConvert.DeserializeObject<UserSession>(sessionData);
+            if (CurrentUser == null) return RedirectToPage("/Index");
+            if (CurrentUser.Role.Equals("Viewer", StringComparison.OrdinalIgnoreCase))
+                return new JsonResult(new { success = false, message = "Viewers cannot revoke certificates." });
+
+            int succeeded = 0, failed = 0;
+            var certManager = new CertRecordServiceManager();
+            foreach (var orderId in request.OrderIds)
+            {
+                try
+                {
+                    var order = await CertRepository.GetCertRecordByOrderId(orderId);
+                    if (order == null || !CanAccessCertificate(order)) { failed++; continue; }
+                    ConfigureService.CertRecordCache.TryAdd(order.OrderId, order);
+                    bool success = await certManager.RevokeCertRecordByIdAsync(_logger, orderId);
+                    if (success) succeeded++; else failed++;
+                }
+                catch { failed++; }
+            }
+
+            return new JsonResult(new
+            {
+                succeeded,
+                failed,
+                message = $"{succeeded} revoked, {failed} failed."
+            });
+        }
+
+        public async Task<IActionResult> OnPostExportCertsAsync([FromBody] BulkOrderRequest request)
+        {
+            var sessionData = HttpContext.Session.GetString("UserSession");
+            if (sessionData == null) return Unauthorized();
+            CurrentUser = JsonConvert.DeserializeObject<UserSession>(sessionData);
+            if (CurrentUser == null) return Unauthorized();
+
+            var certs = new List<CertRecord>();
+            foreach (var orderId in request.OrderIds)
+            {
+                var cert = await CertRepository.GetCertRecordByOrderId(orderId);
+                if (cert != null && CanAccessCertificate(cert)) certs.Add(cert);
+            }
+
+            var json = JsonConvert.SerializeObject(certs, Formatting.Indented);
+            var bytes = System.Text.Encoding.UTF8.GetBytes(json);
+            string filename = $"spheressl-certs-{DateTime.UtcNow:yyyyMMdd-HHmmss}.json";
+            return File(bytes, "application/json", filename);
+        }
+
+        public async Task<IActionResult> OnPostImportCertsAsync()
+        {
+            var sessionData = HttpContext.Session.GetString("UserSession");
+            if (sessionData == null) return Unauthorized();
+            CurrentUser = JsonConvert.DeserializeObject<UserSession>(sessionData);
+            if (CurrentUser == null) return Unauthorized();
+            if (CurrentUser.Role.Equals("Viewer", StringComparison.OrdinalIgnoreCase))
+                return new JsonResult(new { success = false, message = "Viewers cannot import certificates." });
+
+            Request.EnableBuffering();
+            string body;
+            using (var reader = new StreamReader(Request.Body, leaveOpen: true))
+                body = await reader.ReadToEndAsync();
+
+            List<CertRecord> certs;
+            try
+            {
+                certs = JsonConvert.DeserializeObject<List<CertRecord>>(body);
+                if (certs == null) return BadRequest("Invalid JSON format.");
+            }
+            catch
+            {
+                return BadRequest("Failed to parse JSON file.");
+            }
+
+            int imported = 0, skipped = 0, failed = 0;
+            foreach (var cert in certs)
+            {
+                try
+                {
+                    cert.UserId = CurrentUser.UserId;
+                    cert.CertApiKey = string.Empty;
+                    var existing = await CertRepository.GetCertRecordByOrderId(cert.OrderId);
+                    if (existing != null) { skipped++; continue; }
+                    await CertRepository.InsertCertRecord(cert);
+                    imported++;
+                }
+                catch { failed++; }
+            }
+
+            return new JsonResult(new
+            {
+                imported,
+                skipped,
+                failed,
+                message = $"{imported} imported, {skipped} already exist (skipped), {failed} failed."
+            });
+        }
     }
 }
