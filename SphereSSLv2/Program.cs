@@ -1,7 +1,7 @@
 ﻿using SphereSSLv2.Services.Config;
 public class Program
 {
-    [STAThread]
+   
     public static async Task Main(string[] args)
     {
         AppDomain.CurrentDomain.ProcessExit += ConfigureService.OnProcessExit;

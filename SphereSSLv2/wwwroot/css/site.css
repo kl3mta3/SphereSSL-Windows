@@ -97,6 +97,7 @@ body, html {
 .bi-power:hover {
     color: red;
     cursor: pointer;
+    flex-shrink: 1;
 }
 
 
@@ -108,7 +109,7 @@ body, html {
     display: flex;
     align-items: center;
     justify-content: center;
-   
+    flex-shrink: 1;
     cursor: pointer;
     transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
@@ -127,12 +128,14 @@ body, html {
     align-items: center;
     gap: 20px;
     z-index: 10;
+    
 }
 
 .settings-icon {
     font-size: 1.8rem;
     color: white;
     cursor: pointer;
+    flex-shrink: 1;
     transition: transform 0.2s ease, color 0.2s ease;
 }
 
@@ -152,7 +155,7 @@ body, html {
     left: 0;
     z-index: 5;
     box-sizing: border-box;
-
+    flex-shrink: 1;
 }
 
 
