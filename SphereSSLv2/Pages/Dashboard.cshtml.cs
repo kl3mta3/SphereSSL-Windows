@@ -137,10 +137,14 @@ namespace SphereSSLv2.Pages
                     request.AutoAdd = false;
                 }
 
-                if (order.AutoImport && !string.Equals(order.EffectiveOutputFormat, "pfx", StringComparison.OrdinalIgnoreCase))
-                    return BadRequest("Auto Import requires the PFX certificate format.");
                 if (order.AutoImport)
+                {
+                    // Auto Import always produces a PFX certificate.
+                    order.OutputFormat = "pfx";
+                    order.UseSeparateFiles = false;
+
                     AcmeService.EnsureLocalMachineCertificateStoreWritable();
+                }
 
                 bool _useStaging = request.UseStaging || ConfigureService.StagingOnly;
                 string _baseAddress = _useStaging
