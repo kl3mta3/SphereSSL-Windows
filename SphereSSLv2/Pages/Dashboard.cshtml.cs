@@ -143,7 +143,7 @@ namespace SphereSSLv2.Pages
                     order.OutputFormat = "pfx";
                     order.UseSeparateFiles = false;
 
-                    AcmeService.EnsureLocalMachineCertificateStoreWritable();
+                    //AcmeService.EnsureLocalMachineCertificateStoreWritable();
                 }
 
                 bool _useStaging = request.UseStaging || ConfigureService.StagingOnly;
@@ -896,9 +896,22 @@ namespace SphereSSLv2.Pages
                         order.CertKey = certKey;
                         if (order.AutoImport)
                         {
-                            order.ImportedThumbprint = AcmeService.ImportPfxToLocalMachine(
-                                certPem, certKey, order.PfxPassword, order.ImportedThumbprint);
-                            await _logger.Info($"[{CurrentUser.Username}]: Imported DNS-01 certificate into Local Computer > Personal ({order.ImportedThumbprint}).");
+                            try
+                            {
+                                order.ImportedThumbprint = AcmeService.ImportPfxToLocalMachine(
+                                    certPem,
+                                    certKey,
+                                    order.PfxPassword,
+                                    order.ImportedThumbprint);
+
+                                await _logger.Info(
+                                    $"[{CurrentUser.Username}]: Imported DNS-01 certificate into Local Computer > Personal ({order.ImportedThumbprint}).");
+                            }
+                            catch (Exception ex)
+                            {
+                                await _logger.Error(
+                                    $"[{CurrentUser.Username}]: Certificate was saved, but Auto Import failed: {ex.Message}");
+                            }
                         }
 
                         if (order.SaveForRenewal)
