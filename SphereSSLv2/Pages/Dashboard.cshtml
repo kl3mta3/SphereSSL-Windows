@@ -87,8 +87,16 @@
                                     <h6 @(restrictViewerFields ? "class=\"text-muted\"" : "")><strong>Save Path</strong></h6>
                                 <span class="format-subtext"> Ideally this would be where your server will look for the cert.</span>
                                     <div class="input-group mb-3">
-                                        <input type="text" class="form-control" placeholder="/app/data/certs/example.com" id="savePath" @(restrictViewerFields ? "disabled" : "") />
+                                        <input type="text" class="form-control" placeholder="/certs/example.com" id="savePath" @(restrictViewerFields ? "disabled" : "") />
+
+                                    <button class="btn btn-outline-secondary"
+                                            type="button"
+                                            id="browseDnsSavePath"
+                                            @(restrictViewerFields ? "disabled" : "")>
+                                        Browse
+                                    </button>
                                     </div>
+									
 
                                     <div class="form-check mb-2">
                                         <input class="form-check-input" type="checkbox" id="autoAddRecord" onchange="toggleProviderDropdown()" @(restrictViewerFields ? "disabled" : "") />
@@ -569,6 +577,18 @@
     };
     document.querySelectorAll('input[name="certFormat"]')?.forEach(input => input.addEventListener('change', updateDashboardPfxVisibility));
     updateDashboardPfxVisibility();
+	
+	document.getElementById('browseDnsSavePath')?.addEventListener('click', async () => {
+    const response = await fetch('/select-folder');
+
+    if (!response.ok) {
+        alert('Unable to open the folder picker.');
+        return;
+    }
+
+    const path = await response.text();
+    if (path) document.getElementById('savePath').value = path;
+	});
 
     async function submitOrder() {
         // Show waiting modal
